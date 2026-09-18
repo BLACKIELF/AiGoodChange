@@ -1269,7 +1269,7 @@ private final class PendingApplicationPickerController: NSViewController, NSSear
         countLabel.textColor = .secondaryLabelColor
         countLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(labelWithString: "双击添加，自动分配可用快捷键。")
+        let hint = NSTextField(labelWithString: "双击或回车添加，按 ↓ 进入列表；自动分配可用快捷键。")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.translatesAutoresizingMaskIntoConstraints = false
@@ -1330,6 +1330,17 @@ private final class PendingApplicationPickerController: NSViewController, NSSear
         applyFilter()
     }
 
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === searchField, commandSelector == #selector(NSResponder.moveDown(_:)) else { return false }
+        guard !filtered.isEmpty else { return false }
+        if tableView.selectedRow < 0 {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        view.window?.makeFirstResponder(tableView)
+        tableView.scrollRowToVisible(max(tableView.selectedRow, 0))
+        return true
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1361,7 +1372,10 @@ private final class PendingApplicationPickerController: NSViewController, NSSear
             filtered = applications.filter { $0.name.localizedStandardContains(query) }
         }
         tableView.reloadData()
-        if !filtered.isEmpty { tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if !filtered.isEmpty {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            tableView.scrollRowToVisible(0)
+        }
         emptyLabel.isHidden = !filtered.isEmpty
         if applications.isEmpty {
             emptyLabel.stringValue = "没有可添加的可视应用。"
@@ -3345,6 +3359,7 @@ private final class StatusDotView: NSView {
 
 private final class BindingActionRow: NSBox {
     var onPress: (() -> Void)?
+    var onRequestDelete: (() -> Void)?
     private var tracking: NSTrackingArea?
     private var hovered = false
     private var keyboardFocused = false
@@ -3411,8 +3426,12 @@ private final class BindingActionRow: NSBox {
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if modifiers.isEmpty && [UInt16(kVK_Space), UInt16(kVK_Return)].contains(event.keyCode) {
+        let isActivateKey = [UInt16(kVK_Space), UInt16(kVK_Return)].contains(event.keyCode)
+        let isDeleteKey = [UInt16(kVK_Delete), UInt16(kVK_ForwardDelete)].contains(event.keyCode)
+        if modifiers.isEmpty && isActivateKey {
             if !event.isARepeat { onPress?() }
+        } else if modifiers.isEmpty && isDeleteKey, onRequestDelete != nil, !event.isARepeat {
+            onRequestDelete?()
         } else {
             super.keyDown(with: event)
         }
@@ -3481,7 +3500,7 @@ private final class QuickToggleWindow: NSWindow {
 private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindowDelegate {
     let window: QuickToggleWindow
     private let model: QuickToggleModel
-    private let bindingsStack = FlippedStackView()
+    fileprivate let bindingsStack = FlippedStackView()
     private let listScroll = NSScrollView()
     private let countLabel = NSTextField(labelWithString: "")
     private let permissionStatus = NSTextField(wrappingLabelWithString: "")
@@ -4076,7 +4095,11 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         searchField.selectText(nil)
     }
 
-    func controlTextDidChange(_ obj: Notification) { rebuildBindingRows() }
+    func controlTextDidChange(_ obj: Notification) {
+        rebuildBindingRows()
+        listScroll.contentView.scroll(to: .zero)
+        listScroll.reflectScrolledClipView(listScroll.contentView)
+    }
 
     @objc private func changeScope() {
         rebuildBindingRows()
@@ -4169,18 +4192,25 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
 
         let hasFreeDigit = model.nextFreeRecommendedDigit != nil
         let message = hasFreeDigit
-            ? "点右上角“添加应用…”。轻唤会自动分配可用的数字快捷键，添加后即可使用。"
-            : "点右上角“添加应用…”，再点该应用的“未设置”按钮录制快捷键。"
+            ? "轻唤会自动分配可用的数字快捷键：按一下呼出，再按一下藏回。"
+            : "添加后在应用行的“未设置”按钮上录制快捷键即可。"
         let guide = NSTextField(wrappingLabelWithString: message)
         guide.font = .systemFont(ofSize: 12.5)
         guide.textColor = .secondaryLabelColor
         guide.alignment = .left
 
-        let hint = NSTextField(labelWithString: "之后可直接点快捷键按钮换键。")
+        let callToAction = NSButton(title: "添加第一个应用…", target: self, action: #selector(chooseApplication))
+        callToAction.bezelStyle = .rounded
+        callToAction.controlSize = .large
+        callToAction.setAccessibilityLabel("添加第一个应用")
+        callToAction.setAccessibilityHelp("打开已安装应用列表；添加后自动分配一个可用的数字快捷键。")
+        callToAction.heightAnchor.constraint(equalToConstant: 32).isActive = true
+
+        let hint = NSTextField(labelWithString: "之后点行内快捷键可换键，点行本身即可呼出应用。")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
 
-        let content = verticalStack([title, guide, hint], spacing: 6)
+        let content = verticalStack([title, guide, callToAction, hint], spacing: 8)
         pin(content, inside: emptyState, insets: NSEdgeInsets(top: 22, left: 18, bottom: 22, right: 18))
         return emptyState
     }
@@ -4255,8 +4285,9 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         row.fillColor = .clear
         row.heightAnchor.constraint(equalToConstant: 64).isActive = true
         row.setAccessibilityLabel("\(binding.target.name) 快捷键设置")
-        row.setAccessibilityHelp("点图标、名称或空白处呼出或恢复应用；聚焦这一行后也可按空格或回车。")
+        row.setAccessibilityHelp("点图标、名称或空白处呼出或恢复应用；聚焦这一行后也可按空格或回车，按删除键移除（会先确认）。")
         row.toolTip = "呼出或恢复 \(binding.target.name)，等同按它的快捷键"
+        row.onRequestDelete = { [weak self] in self?.confirmRemoval(of: binding) }
 
         let icon = NSImageView()
         icon.image = sizedApplicationIcon(at: binding.target.path, pointSize: 32)
@@ -4459,7 +4490,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         ])
     }
 
-    @objc private func chooseApplication() {
+    @objc fileprivate func chooseApplication() {
         if scopeControl.selectedSegment == ApplicationListScope.occupied.rawValue {
             showOccupiedEditor()
             return
@@ -4512,6 +4543,10 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         guard let rawValue = sender.identifier?.rawValue,
               let id = UUID(uuidString: rawValue),
               let binding = model.bindings.first(where: { $0.id == id }) else { return }
+        confirmRemoval(of: binding)
+    }
+
+    private func confirmRemoval(of binding: AppBinding) {
         let alert = NSAlert()
         alert.messageText = "移除 \(binding.target.name)？"
         alert.informativeText = "会删除这个应用的快捷键设置，不会退出或删除应用。"
@@ -4519,7 +4554,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         alert.addButton(withTitle: "取消")
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        model.removeBinding(id)
+        model.removeBinding(binding.id)
     }
 
     @objc private func toggleEnabled() { model.toggleEnabled() }
@@ -6199,7 +6234,55 @@ private enum SelfTest {
         let failures = controller.interfaceLayoutFailures()
         failures.forEach { print("FAIL: \($0)") }
         print(failures.isEmpty ? "Interface layout smoke passed (600/760/1080 widths)" : "Interface layout smoke failed")
-        return failures.isEmpty
+        let welcomePassed = checkFirstUseWelcomeCard()
+        return failures.isEmpty && welcomePassed
+    }
+
+    private static func checkFirstUseWelcomeCard() -> Bool {
+        let model = QuickToggleModel(diagnosticMode: true, previewMode: true, previewBindings: [])
+        defer { model.close() }
+        let controller = SettingsController(model: model)
+        let button = descendantButton(in: controller.bindingsStack, titled: "添加第一个应用…")
+        var passed = button != nil
+        if let button {
+            passed = passed
+                && !button.isHidden
+                && button.target as? NSObject === controller
+                && button.action == #selector(SettingsController.chooseApplication)
+        }
+        print(passed ? "First-use welcome call-to-action passed" : "First-use welcome call-to-action failed")
+        return passed && renderWelcomeCardIfRequested(controller: controller)
+    }
+
+    private static func renderWelcomeCardIfRequested(controller: SettingsController) -> Bool {
+        guard let raw = ProcessInfo.processInfo.environment["QUICKTOGGLE_RENDER_DIR"], !raw.isEmpty,
+              let root = controller.window.contentView else { return true }
+        let directory = URL(fileURLWithPath: raw, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            controller.window.setContentSize(NSSize(width: 760, height: 690))
+            for (name, appearance) in [("welcome-light", NSAppearance.Name.aqua), ("welcome-dark", NSAppearance.Name.darkAqua)] {
+                controller.window.appearance = NSAppearance(named: appearance)
+                root.layoutSubtreeIfNeeded()
+                var imageData: Data?
+                controller.window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
+                    root.cacheDisplay(in: root.bounds, to: bitmap)
+                    imageData = bitmap.representation(using: .png, properties: [:])
+                }
+                if let imageData { try imageData.write(to: directory.appendingPathComponent("layout-\(name).png")) }
+                else { return false }
+            }
+            return true
+        } catch { return false }
+    }
+
+    private static func descendantButton(in view: NSView, titled title: String) -> NSButton? {
+        for subview in view.subviews {
+            if let button = subview as? NSButton, button.title == title { return button }
+            if let match = descendantButton(in: subview, titled: title) { return match }
+        }
+        return nil
     }
 }
 
