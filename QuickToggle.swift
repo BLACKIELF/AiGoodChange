@@ -3308,7 +3308,11 @@ private final class QuickToggleModel {
             self.isCheckingForUpdate = false
             switch result {
             case .failure(let failure):
-                self.updateCheckState = .failed(reason: failure.userDescription)
+                // A failed lookup must not erase a previously found update;
+                // only a fresh authoritative answer may replace that knowledge.
+                if !self.updateCheckState.isAvailable {
+                    self.updateCheckState = .failed(reason: failure.userDescription)
+                }
                 if userInitiated {
                     self.reportStatus("检查更新失败：\(failure.userDescription)。", tone: .warning)
                 }
@@ -3346,18 +3350,24 @@ private final class QuickToggleModel {
                 reportStatus("已是最新版本 v\(appVersion)。")
             }
         case .none:
-            updateCheckState = .failed(reason: "无法识别版本号 “\(tag)”")
+            if !updateCheckState.isAvailable {
+                updateCheckState = .failed(reason: "无法识别版本号 “\(tag)”")
+            }
             if userInitiated {
                 reportStatus("检查完成，但无法识别发行版本 “\(tag)”，请到发行页确认。", tone: .warning)
             }
         }
     }
 
-    private static func updateCheckTimeDescription(_ date: Date) -> String {
+    private static let updateCheckTimeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+
+    private static func updateCheckTimeDescription(_ date: Date) -> String {
+        updateCheckTimeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     func reportStatus(_ message: String, tone: StatusTone = .info) {
@@ -3615,6 +3625,7 @@ private final class StatusDotView: NSView {
 private final class BindingActionRow: NSBox {
     var onPress: (() -> Void)?
     var onRequestDelete: (() -> Void)?
+    var onArrow: ((Bool) -> Void)?
     private var tracking: NSTrackingArea?
     private var hovered = false
     private var keyboardFocused = false
@@ -3683,10 +3694,13 @@ private final class BindingActionRow: NSBox {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let isActivateKey = [UInt16(kVK_Space), UInt16(kVK_Return)].contains(event.keyCode)
         let isDeleteKey = [UInt16(kVK_Delete), UInt16(kVK_ForwardDelete)].contains(event.keyCode)
+        let isArrowKey = [UInt16(kVK_UpArrow), UInt16(kVK_DownArrow)].contains(event.keyCode)
         if modifiers.isEmpty && isActivateKey {
             if !event.isARepeat { onPress?() }
         } else if modifiers.isEmpty && isDeleteKey, onRequestDelete != nil, !event.isARepeat {
             onRequestDelete?()
+        } else if modifiers.isEmpty && isArrowKey, onArrow != nil, !event.isARepeat {
+            onArrow?(event.keyCode == UInt16(kVK_DownArrow))
         } else {
             super.keyDown(with: event)
         }
@@ -4597,9 +4611,13 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         row.fillColor = .clear
         row.heightAnchor.constraint(equalToConstant: 64).isActive = true
         row.setAccessibilityLabel("\(binding.target.name) 快捷键设置")
-        row.setAccessibilityHelp("点图标、名称或空白处呼出或恢复应用；聚焦这一行后也可按空格或回车，按删除键移除（会先确认）。")
+        row.setAccessibilityHelp("点图标、名称或空白处呼出或恢复应用；聚焦后可按空格或回车呼出，↑↓ 移动到相邻行，删除键移除（会先确认）。")
         row.toolTip = "呼出或恢复 \(binding.target.name)，等同按它的快捷键"
         row.onRequestDelete = { [weak self] in self?.confirmRemoval(of: binding) }
+        row.onArrow = { [weak self, weak row] isDown in
+            guard let self, let row else { return }
+            self.moveRowFocus(from: row, isDown: isDown)
+        }
 
         let icon = NSImageView()
         icon.image = sizedApplicationIcon(at: binding.target.path, pointSize: 32)
@@ -4856,6 +4874,20 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
               let id = UUID(uuidString: rawValue),
               let binding = model.bindings.first(where: { $0.id == id }) else { return }
         confirmRemoval(of: binding)
+    }
+
+    private func moveRowFocus(from row: BindingActionRow, isDown: Bool) {
+        let rows = bindingsStack.arrangedSubviews.compactMap { $0 as? BindingActionRow }
+        guard let index = rows.firstIndex(where: { $0 === row }) else { return }
+        let targetIndex = index + (isDown ? 1 : -1)
+        guard rows.indices.contains(targetIndex) else {
+            if !isDown {
+                window.makeFirstResponder(searchField)
+                searchField.selectText(nil)
+            }
+            return
+        }
+        window.makeFirstResponder(rows[targetIndex])
     }
 
     private func confirmRemoval(of binding: AppBinding) {
@@ -5122,7 +5154,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let detailsItem = NSMenuItem(title: "状态与版本", action: nil, keyEquivalent: "")
         let details = NSMenu(title: "状态与版本")
         details.addItem(version)
-        for text in [model.statusMessage, model.diagnosticSummary, "打开轻唤：\(model.settingsShortcut.displayName)"] {
+        for text in [model.statusMessage, model.updateCheckSummary, model.diagnosticSummary, "打开轻唤：\(model.settingsShortcut.displayName)"] {
             let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
             details.addItem(item)
@@ -5449,6 +5481,26 @@ private enum SelfTest {
             }
         }
         passed = firstPresses == 6 && secondPresses == 1 && passed
+        var arrowMoves: [Bool] = []
+        row.onArrow = { arrowMoves.append($0) }
+        for (code, glyph, expectedDown) in [(UInt16(kVK_DownArrow), "\u{F701}", true), (UInt16(kVK_UpArrow), "\u{F700}", false)] {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: glyph, charactersIgnoringModifiers: glyph,
+                isARepeat: false, keyCode: code
+            ) else { return false }
+            row.keyDown(with: event)
+            passed = (arrowMoves.last == expectedDown) && passed
+        }
+        if let commandArrow = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}",
+            isARepeat: false, keyCode: UInt16(kVK_DownArrow)
+        ) {
+            row.keyDown(with: commandArrow)
+        }
+        passed = arrowMoves.count == 2 && passed
+        row.onArrow = nil
         print(passed ? "Binding row mouse/control/keyboard/accessibility routing passed" : "Binding row interaction failed")
         return passed
     }
