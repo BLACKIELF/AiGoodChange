@@ -288,6 +288,9 @@ private final class PreferenceStore {
         static let importedSuggestedAppIDs = "quickToggle.importedSuggestedAppIDs"
         static let occupiedHotKeys = "quickToggle.occupiedHotKeys"
         static let shortcutConflictKnowledge = "quickToggle.shortcutConflictKnowledge"
+        static let dailyUpdateCheckEnabled = "quickToggle.dailyUpdateCheckEnabled"
+        static let lastUpdateCheckDate = "quickToggle.lastUpdateCheckDate"
+        static let knownAvailableUpdate = "quickToggle.knownAvailableUpdate"
     }
 
     private let defaults: UserDefaults
@@ -366,6 +369,37 @@ private final class PreferenceStore {
 
     func saveShortcutConflictKnowledge(_ knowledge: ShortcutConflictKnowledge) {
         encode(knowledge, forKey: Key.shortcutConflictKnowledge)
+    }
+
+    var dailyUpdateCheckEnabled: Bool {
+        get {
+            defaults.object(forKey: Key.dailyUpdateCheckEnabled) == nil
+                ? true
+                : defaults.bool(forKey: Key.dailyUpdateCheckEnabled)
+        }
+        set { defaults.set(newValue, forKey: Key.dailyUpdateCheckEnabled) }
+    }
+
+    var lastUpdateCheckDate: Date? {
+        get { defaults.object(forKey: Key.lastUpdateCheckDate) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.lastUpdateCheckDate)
+            } else {
+                defaults.removeObject(forKey: Key.lastUpdateCheckDate)
+            }
+        }
+    }
+
+    var knownAvailableUpdate: String? {
+        get { defaults.string(forKey: Key.knownAvailableUpdate) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.knownAvailableUpdate)
+            } else {
+                defaults.removeObject(forKey: Key.knownAvailableUpdate)
+            }
+        }
     }
 
     private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
@@ -2518,6 +2552,110 @@ private final class ToggleEngine {
     }
 }
 
+// MARK: - Update check
+
+private enum UpdateCheckState: Equatable {
+    case idle
+    case checking
+    case upToDate
+    case available(latest: String)
+    case failed(reason: String)
+
+    var isAvailable: Bool {
+        if case .available = self { return true }
+        return false
+    }
+}
+
+/// Parses plain release tags like "v1.2.3" or "1.2". Tags with any suffix
+/// (windows preview, beta, build metadata) fail closed instead of comparing loosely.
+private struct ReleaseVersion: Equatable {
+    let components: [Int]
+
+    static func parse(_ raw: String) -> ReleaseVersion? {
+        let trimmed = raw.hasPrefix("v") || raw.hasPrefix("V") ? String(raw.dropFirst()) : raw
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count) else { return nil }
+        var numbers: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.allSatisfy(\.isNumber), let value = Int(part) else { return nil }
+            numbers.append(value)
+        }
+        while numbers.count < 3 { numbers.append(0) }
+        return ReleaseVersion(components: numbers)
+    }
+
+    /// nil when either side is not a plain version tag and cannot be compared.
+    static func isCurrent(_ current: String, behind latestTag: String) -> Bool? {
+        guard let currentVersion = parse(current), let latest = parse(latestTag) else { return nil }
+        for index in 0..<3 where latest.components[index] != currentVersion.components[index] {
+            return latest.components[index] > currentVersion.components[index]
+        }
+        return false
+    }
+}
+
+private enum UpdateCheckEndpoints {
+    static let latestRelease = URL(string: "https://api.github.com/repos/BLACKIELF/QuickToggle/releases/latest")!
+    static let releasePage = URL(string: "https://github.com/BLACKIELF/QuickToggle/releases/latest")!
+}
+
+private enum UpdateCheckService {
+    enum Failure: Error, Equatable {
+        case transport(String)
+        case status(Int)
+        case unreadableTag(String)
+
+        var userDescription: String {
+            switch self {
+            case .transport(let detail): return detail
+            case .status(let code): return "GitHub 返回 HTTP \(code)"
+            case .unreadableTag(let tag): return "无法识别版本号 “\(tag)”"
+            }
+        }
+    }
+
+    /// Fetches the newest non-prerelease tag via /releases/latest (which skips
+    /// drafts and prereleases). Never called in preview or diagnostic mode;
+    /// completion always lands on the main queue.
+    static func fetchLatestTag(completion: @escaping (Result<String, Failure>) -> Void) {
+        var request = URLRequest(url: UpdateCheckEndpoints.latestRelease, timeoutInterval: 10)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let result: Result<String, Failure>
+            if let urlError = error as? URLError {
+                result = .failure(.transport(Self.transportDescription(for: urlError)))
+            } else if error != nil {
+                result = .failure(.transport("网络错误"))
+            } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                result = .failure(.status(http.statusCode))
+            } else if let data,
+                      let payload = try? JSONDecoder().decode(LatestReleasePayload.self, from: data),
+                      !payload.tagName.isEmpty {
+                result = .success(payload.tagName)
+            } else {
+                result = .failure(.transport("响应无法解析"))
+            }
+            DispatchQueue.main.async { completion(result) }
+        }.resume()
+    }
+
+    private static func transportDescription(for error: URLError) -> String {
+        switch error.code {
+        case .timedOut: return "请求超时"
+        case .notConnectedToInternet, .networkConnectionLost: return "当前没有可用的网络连接"
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: return "无法连接 api.github.com"
+        default: return "网络错误（\(error.code.rawValue)）"
+        }
+    }
+
+    private struct LatestReleasePayload: Decodable {
+        let tagName: String
+
+        enum CodingKeys: String, CodingKey { case tagName = "tag_name" }
+    }
+}
+
 // MARK: - Application model
 
 private final class QuickToggleModel {
@@ -2531,6 +2669,8 @@ private final class QuickToggleModel {
     private(set) var settingsShortcut: Shortcut
     private(set) var statusMessage = "添加应用后，轻唤会自动分配快捷键。"
     private(set) var statusTone: StatusTone = .info
+    private(set) var updateCheckState: UpdateCheckState = .idle
+    private var isCheckingForUpdate = false
     private var statusStickyUntil = Date.distantPast
     private var hotKeyRecoveryFailed = false
 
@@ -2578,6 +2718,15 @@ private final class QuickToggleModel {
             shortcutConflictKnowledge = store.loadShortcutConflictKnowledge()
             isEnabled = store.enabled
             settingsShortcut = store.settingsShortcut ?? Self.defaultSettingsShortcut
+            // Restore a previously found update so the menu keeps showing it
+            // even when the next automatic check is still outside its 24h window.
+            if let known = store.knownAvailableUpdate {
+                if ReleaseVersion.isCurrent(appVersion, behind: known) == true {
+                    updateCheckState = .available(latest: known)
+                } else {
+                    store.knownAvailableUpdate = nil
+                }
+            }
             importVerifiedLaunchApps()
             importSuggestedToggleApps()
         }
@@ -3105,6 +3254,112 @@ private final class QuickToggleModel {
         }
     }
 
+    // MARK: Update check
+
+    var dailyUpdateCheckEnabled: Bool { preferences?.dailyUpdateCheckEnabled ?? true }
+    var isUpdateCheckInProgress: Bool { isCheckingForUpdate }
+    var isUpdateAvailable: Bool { updateCheckState.isAvailable }
+
+    var updateCheckSummary: String {
+        let current = "当前版本 v\(appVersion)"
+        switch updateCheckState {
+        case .idle:
+            if let last = preferences?.lastUpdateCheckDate {
+                return "\(current) · 上次检查 \(Self.updateCheckTimeDescription(last))"
+            }
+            return "\(current) · 尚未检查过更新"
+        case .checking:
+            return "\(current) · 正在检查…"
+        case .upToDate:
+            return "\(current) · 已是最新"
+        case .available(let latest):
+            return "发现新版本 \(latest)（当前 v\(appVersion)），点“查看发行页”了解更新内容。"
+        case .failed(let reason):
+            return "\(current) · 检查失败：\(reason)。可稍后重试或手动再查。"
+        }
+    }
+
+    func setDailyUpdateCheck(_ enabled: Bool) {
+        preferences?.dailyUpdateCheckEnabled = enabled
+        reportStatus(enabled
+            ? "已打开每日更新检查：启动后和运行期间每 24 小时静默检查一次，只读发行版本号，不上传数据。"
+            : "已关闭自动检查；仍可随时手动点“检查更新”。")
+        if enabled { checkForUpdateIfDue() }
+    }
+
+    func checkForUpdate(userInitiated: Bool) {
+        guard preferences != nil else {
+            if userInitiated {
+                reportStatus(previewMode ? "预览：不联网检查更新。" : "诊断模式：不联网检查更新。")
+            }
+            return
+        }
+        guard !isCheckingForUpdate else { return }
+        isCheckingForUpdate = true
+        updateCheckState = .checking
+        preferences?.lastUpdateCheckDate = Date()
+        if userInitiated {
+            reportStatus("正在检查更新…")
+        } else {
+            onChange?()
+        }
+        UpdateCheckService.fetchLatestTag { [weak self] result in
+            guard let self else { return }
+            self.isCheckingForUpdate = false
+            switch result {
+            case .failure(let failure):
+                self.updateCheckState = .failed(reason: failure.userDescription)
+                if userInitiated {
+                    self.reportStatus("检查更新失败：\(failure.userDescription)。", tone: .warning)
+                }
+            case .success(let tag):
+                self.applyUpdateTag(tag, userInitiated: userInitiated)
+            }
+            self.onChange?()
+        }
+    }
+
+    func checkForUpdateIfDue() {
+        guard preferences?.dailyUpdateCheckEnabled == true else { return }
+        if let last = preferences?.lastUpdateCheckDate,
+           Date().timeIntervalSince(last) < 24 * 60 * 60 {
+            return
+        }
+        checkForUpdate(userInitiated: false)
+    }
+
+    func openReleasePage() {
+        NSWorkspace.shared.open(UpdateCheckEndpoints.releasePage)
+    }
+
+    private func applyUpdateTag(_ rawTag: String, userInitiated: Bool) {
+        let tag = String(rawTag.prefix(32))
+        switch ReleaseVersion.isCurrent(appVersion, behind: tag) {
+        case .some(true):
+            updateCheckState = .available(latest: tag)
+            preferences?.knownAvailableUpdate = tag
+            reportStatus("发现新版本 \(tag)，当前 v\(appVersion)。可在菜单栏或“设置与帮助”里打开发行页。")
+        case .some(false):
+            updateCheckState = .upToDate
+            preferences?.knownAvailableUpdate = nil
+            if userInitiated {
+                reportStatus("已是最新版本 v\(appVersion)。")
+            }
+        case .none:
+            updateCheckState = .failed(reason: "无法识别版本号 “\(tag)”")
+            if userInitiated {
+                reportStatus("检查完成，但无法识别发行版本 “\(tag)”，请到发行页确认。", tone: .warning)
+            }
+        }
+    }
+
+    private static func updateCheckTimeDescription(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
     func reportStatus(_ message: String, tone: StatusTone = .info) {
         let displayed = previewMode && !message.hasPrefix("预览") ? "预览：" + message : message
         applyStatus(displayed, tone: tone, preserveStickyFailure: false)
@@ -3522,6 +3777,10 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
     private let scopeControl = NSSegmentedControl()
     private let listTitle = NSTextField(labelWithString: "我的应用")
     private let preferencesButton = NSButton()
+    private let updateStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let checkUpdateButton = NSButton()
+    private let releasePageButton = NSButton()
+    private let dailyUpdateCheckButton = NSButton()
     private var preferencesPanel: QuickToggleWindow?
     private var rowStatusLabels: [UUID: NSTextField] = [:]
     private var lastRenderedBindings: [AppBinding]?
@@ -3602,6 +3861,12 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         permissionButton.isHidden = Accessibility.isTrusted
         permissionButton.isEnabled = !model.previewMode
         loginButton.isEnabled = !model.previewMode
+        updateStatusLabel.stringValue = model.updateCheckSummary
+        checkUpdateButton.isEnabled = !model.previewMode && !model.isUpdateCheckInProgress
+        checkUpdateButton.title = model.isUpdateCheckInProgress ? "正在检查…" : "检查更新…"
+        releasePageButton.isHidden = !model.isUpdateAvailable
+        dailyUpdateCheckButton.state = model.dailyUpdateCheckEnabled ? .on : .off
+        dailyUpdateCheckButton.isEnabled = !model.previewMode
     }
 
     private func buildInterface() {
@@ -3820,6 +4085,53 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             $0.widthAnchor.constraint(equalTo: runtimeStack.widthAnchor).isActive = true
         }
 
+        let updateTitle = NSTextField(labelWithString: "更新")
+        updateTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        updateStatusLabel.font = .systemFont(ofSize: 11.5)
+        updateStatusLabel.textColor = .secondaryLabelColor
+        updateStatusLabel.maximumNumberOfLines = 2
+        updateStatusLabel.setAccessibilityLabel("更新检查状态")
+
+        checkUpdateButton.title = "检查更新…"
+        checkUpdateButton.bezelStyle = .rounded
+        checkUpdateButton.controlSize = .small
+        checkUpdateButton.target = self
+        checkUpdateButton.action = #selector(checkForUpdate)
+        checkUpdateButton.setAccessibilityLabel("检查更新")
+        checkUpdateButton.setAccessibilityHelp("向 GitHub 查询最新发行版本；只读版本号，不会上传任何数据，也不会自动安装。")
+
+        releasePageButton.title = "查看发行页…"
+        releasePageButton.bezelStyle = .rounded
+        releasePageButton.controlSize = .small
+        releasePageButton.target = self
+        releasePageButton.action = #selector(openReleasePage)
+        releasePageButton.setAccessibilityLabel("查看发行页")
+        releasePageButton.isHidden = true
+
+        dailyUpdateCheckButton.setButtonType(.switch)
+        dailyUpdateCheckButton.title = "每天自动检查一次"
+        dailyUpdateCheckButton.controlSize = .small
+        dailyUpdateCheckButton.font = .systemFont(ofSize: 12)
+        dailyUpdateCheckButton.target = self
+        dailyUpdateCheckButton.action = #selector(toggleDailyUpdateCheck)
+        dailyUpdateCheckButton.state = model.dailyUpdateCheckEnabled ? .on : .off
+        dailyUpdateCheckButton.setAccessibilityLabel("每天自动检查一次更新")
+        dailyUpdateCheckButton.toolTip = "打开后，启动和运行期间每 24 小时静默检查一次 GitHub 最新发行版。"
+
+        let updateControls = horizontalStack([checkUpdateButton, releasePageButton, dailyUpdateCheckButton], spacing: 10)
+        updateControls.alignment = .centerY
+        let updateSpacer = NSView()
+        updateSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let updateRow = horizontalStack([updateTitle, updateSpacer, updateControls], spacing: 8)
+        updateRow.alignment = .centerY
+        let updateStack = verticalStack([updateRow, updateStatusLabel], spacing: 8)
+        let updateCard = GlassCardView(frame: .zero)
+        updateCard.setAccessibilityLabel("更新检查")
+        pin(updateStack, inside: updateCard, insets: NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14))
+        [updateRow, updateStatusLabel].forEach {
+            $0.widthAnchor.constraint(equalTo: updateStack.widthAnchor).isActive = true
+        }
+
         guideButton.title = "macOS 快捷键参考"
         guideButton.target = self
         guideButton.action = #selector(toggleGuide)
@@ -4000,7 +4312,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         footerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let footer = horizontalStack([footerHint, footerSpacer, preferencesButton], spacing: 10)
         footer.alignment = .centerY
-        buildPreferencesPanel(views: [runtimeCard, guideButton, guideCard, appGuideButton, appGuideCard])
+        buildPreferencesPanel(views: [runtimeCard, updateCard, guideButton, guideCard, appGuideButton, appGuideCard])
 
         let rootStack = verticalStack([header, applicationsCard, statusBanner, footer], spacing: 12)
         rootStack.translatesAutoresizingMaskIntoConstraints = false
@@ -4565,6 +4877,13 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         loginButton.toolTip = model.loginAtLaunchHelp
     }
 
+    @objc private func checkForUpdate() { model.checkForUpdate(userInitiated: true) }
+    @objc private func openReleasePage() { model.openReleasePage() }
+    @objc private func toggleDailyUpdateCheck() {
+        model.setDailyUpdateCheck(dailyUpdateCheckButton.state == .on)
+        dailyUpdateCheckButton.state = model.dailyUpdateCheckEnabled ? .on : .off
+    }
+
     private func applyAccessibilityChrome() {
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         window.isOpaque = reduced
@@ -4647,6 +4966,19 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
                     }
                     if let imageData { try imageData.write(to: directory.appendingPathComponent("layout-\(name).png")) }
                     else { failures.append("\(name) appearance produced no image") }
+                    if let prefsPanel = preferencesPanel, let prefsRoot = prefsPanel.contentView {
+                        prefsPanel.appearance = NSAppearance(named: appearance)
+                        prefsPanel.setContentSize(NSSize(width: 590, height: 530))
+                        prefsRoot.layoutSubtreeIfNeeded()
+                        var prefsData: Data?
+                        prefsPanel.effectiveAppearance.performAsCurrentDrawingAppearance {
+                            guard let bitmap = prefsRoot.bitmapImageRepForCachingDisplay(in: prefsRoot.bounds) else { return }
+                            prefsRoot.cacheDisplay(in: prefsRoot.bounds, to: bitmap)
+                            prefsData = bitmap.representation(using: .png, properties: [:])
+                        }
+                        if let prefsData { try prefsData.write(to: directory.appendingPathComponent("layout-prefs-\(name).png")) }
+                        else { failures.append("\(name) appearance produced no prefs image") }
+                    }
                 }
             } catch { failures.append("appearance render failed: \(error)") }
         }
@@ -4661,6 +4993,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var settings: SettingsController?
     private var previousApplication: NSRunningApplication?
     private var lastHotKeyRecovery = Date.distantPast
+    private var updateCheckTimer: Timer?
 
     override init() {
         #if QUICKTOGGLE_PREVIEW
@@ -4681,9 +5014,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         installMainMenu()
         installStatusItem()
         observeWorkspaceRecovery()
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.model.checkForUpdateIfDue()
+        }
+        updateCheckTimer?.tolerance = 600
         if model.previewMode || model.bindings.isEmpty || model.bindings.allSatisfy({ $0.shortcut == nil }) {
             DispatchQueue.main.async { [weak self] in self?.showSettings() }
         }
+        DispatchQueue.main.async { [weak self] in self?.model.checkForUpdateIfDue() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -4713,7 +5051,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         recoverHotKeysIfNeeded()
         refreshInterface()
     }
-    func applicationWillTerminate(_ notification: Notification) { model.close() }
+    func applicationWillTerminate(_ notification: Notification) {
+        updateCheckTimer?.invalidate()
+        model.close()
+    }
 
     func menuWillOpen(_ menu: NSMenu) {
         recoverHotKeysIfNeeded()
@@ -4769,6 +5110,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(.separator())
         addMenuItem(model.isEnabled ? "停用全部快捷键" : "启用全部快捷键", action: #selector(toggleEnabledAction), to: menu)
         addMenuItem("申请辅助功能权限", action: #selector(requestAccessibilityAction), to: menu)
+        let checkItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdateAction), keyEquivalent: "")
+        checkItem.target = self
+        checkItem.isEnabled = !model.isUpdateCheckInProgress
+        menu.addItem(checkItem)
+        if case .available(let latest) = model.updateCheckState {
+            addMenuItem("发现新版本 \(latest)，查看发行页…", action: #selector(openReleasePageAction), to: menu)
+        }
         addMenuItem("导出配置…", action: #selector(exportConfigurationAction), to: menu)
         addMenuItem("导入配置…", action: #selector(importConfigurationAction), to: menu)
         let detailsItem = NSMenuItem(title: "状态与版本", action: nil, keyEquivalent: "")
@@ -4834,6 +5182,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         model.handleHotKey(id)
     }
     @objc private func requestAccessibilityAction() { model.requestAccessibility() }
+    @objc private func checkForUpdateAction() {
+        recoverHotKeysIfNeeded()
+        model.checkForUpdate(userInitiated: true)
+    }
+    @objc private func openReleasePageAction() { model.openReleasePage() }
 
     @objc private func exportConfigurationAction() {
         let payload = model.exportConfiguration()
@@ -4931,6 +5284,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func handleWorkspaceRecovery() {
         recoverHotKeysIfNeeded(force: true)
+        model.checkForUpdateIfDue()
     }
 
     private func recoverHotKeysIfNeeded(force: Bool = false) {
@@ -4998,7 +5352,48 @@ private enum SelfTest {
             && model.settingsShortcut.displayName == "⌘3"
             && roundTrip == payload
         print(passed ? "Menu/model smoke passed" : "Menu/model smoke failed")
-        return checkBindingRowInteraction() && passed
+        return checkBindingRowInteraction() && checkUpdateCheckLogic() && passed
+    }
+
+    private static func checkUpdateCheckLogic() -> Bool {
+        var passed = true
+        passed = passed && ReleaseVersion.parse("v1.0.0")?.components == [1, 0, 0]
+        passed = passed && ReleaseVersion.parse("1.10.2")?.components == [1, 10, 2]
+        passed = passed && ReleaseVersion.parse("v1.2")?.components == [1, 2, 0]
+        passed = passed && ReleaseVersion.parse("v01.02.03")?.components == [1, 2, 3]
+        passed = passed && ReleaseVersion.parse("v1.0.0-windows-preview.1") == nil
+        passed = passed && ReleaseVersion.parse("1.0.0-beta") == nil
+        passed = passed && ReleaseVersion.parse("1..0") == nil
+        passed = passed && ReleaseVersion.parse("") == nil
+        passed = passed && ReleaseVersion.parse("1.-2.0") == nil
+        passed = passed && ReleaseVersion.isCurrent("1.0.0", behind: "v1.0.0") == false
+        passed = passed && ReleaseVersion.isCurrent("1.0.0", behind: "v1.0.1") == true
+        passed = passed && ReleaseVersion.isCurrent("1.10.0", behind: "v1.9.9") == false
+        passed = passed && ReleaseVersion.isCurrent("1.0.0", behind: "v2.0.0") == true
+        passed = passed && ReleaseVersion.isCurrent("1.0.0", behind: "v1.0.0-windows-preview.1") == nil
+
+        let suiteName = "quicktoggle.selftest.updatecheck"
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        defaults.removePersistentDomain(forName: suiteName)
+        let store = PreferenceStore(defaults: defaults)
+        passed = passed && store.dailyUpdateCheckEnabled == true
+        store.dailyUpdateCheckEnabled = false
+        passed = passed && store.dailyUpdateCheckEnabled == false
+        passed = passed && store.lastUpdateCheckDate == nil
+        let stamp = Date(timeIntervalSince1970: 1_000_000)
+        store.lastUpdateCheckDate = stamp
+        passed = passed && abs((store.lastUpdateCheckDate?.timeIntervalSince1970 ?? 0) - 1_000_000) < 0.001
+        store.lastUpdateCheckDate = nil
+        passed = passed && store.lastUpdateCheckDate == nil
+        passed = passed && store.knownAvailableUpdate == nil
+        store.knownAvailableUpdate = "v1.0.1"
+        passed = passed && store.knownAvailableUpdate == "v1.0.1"
+        store.knownAvailableUpdate = nil
+        passed = passed && store.knownAvailableUpdate == nil
+        defaults.removePersistentDomain(forName: suiteName)
+
+        print(passed ? "Update check logic passed" : "Update check logic failed")
+        return passed
     }
 
     private static func checkBindingRowInteraction() -> Bool {
