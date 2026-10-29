@@ -5412,6 +5412,11 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
                 }
             }
         }
+        if showCards, !rows.isEmpty {
+            // Cards move between bands when filtering or reordering. Remove
+            // ancestor width constraints before detaching them from that tree.
+            NSLayoutConstraint.deactivate(bindingRowCache.values.map { $0.widthConstraint })
+        }
         bindingRowCache = nextCache
         rowStatusLabels = bindingRowCache.reduce(into: [UUID: NSTextField]()) { dict, entry in
             if let line = entry.value.row.statusLine { dict[entry.key] = line }
@@ -5477,10 +5482,9 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             ? restoredRow : nil
     }
 
-    private var cardColumnCount: Int {
-        let width = listScroll.contentSize.width > 0 ? listScroll.contentSize.width : window.frame.width - 52
-        return min(4, max(1, Int((width + 8) / 238)))
-    }
+    // The supported window is at least 560 pt wide. Keep three columns while
+    // Auto Layout adjusts their widths, including before the clip view is laid out.
+    private let cardColumnCount = 3
 
     private func bindingWidthConstraint(for row: NSView, columns: Int) -> NSLayoutConstraint {
         row.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor, multiplier: 1 / CGFloat(columns),
@@ -5643,7 +5647,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         row.borderWidth = 1
         row.borderColor = .clear
         row.fillColor = .clear
-        row.heightAnchor.constraint(equalToConstant: isCard ? 100 : 52).isActive = true
+        row.heightAnchor.constraint(equalToConstant: isCard ? 96 : 52).isActive = true
         row.setAccessibilityLabel("\(binding.target.name) 快捷键设置")
         row.setAccessibilityHelp("点图标、名称或空白处更换应用，保留原快捷键；聚焦后按空格或回车选择，↑↓ 移动到相邻行，删除键移除（会先确认）。")
         row.toolTip = "更换 \(binding.target.name)，保留\(binding.shortcut?.displayName ?? "未设置的快捷键")"
@@ -5660,15 +5664,18 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         }
 
         let icon = NSImageView()
-        icon.image = sizedApplicationIcon(at: binding.target.path, pointSize: 32)
+        let iconSize: CGFloat = isCard ? 28 : 32
+        icon.image = sizedApplicationIcon(at: binding.target.path, pointSize: iconSize)
         icon.imageScaling = .scaleNone
-        icon.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        icon.widthAnchor.constraint(equalToConstant: iconSize).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: iconSize).isActive = true
         icon.setAccessibilityLabel("\(binding.target.name) 图标")
 
-        let name = NSTextField(labelWithString: binding.target.name)
-        name.font = .systemFont(ofSize: 13, weight: .semibold)
-        name.lineBreakMode = .byTruncatingTail
+        let name = isCard ? NSTextField(wrappingLabelWithString: binding.target.name)
+                          : NSTextField(labelWithString: binding.target.name)
+        name.font = .systemFont(ofSize: isCard ? 12 : 13, weight: .semibold)
+        name.maximumNumberOfLines = isCard ? 2 : 1
+        name.lineBreakMode = isCard ? .byWordWrapping : .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         name.toolTip = row.toolTip
         let switchIndicator = NSImageView()
@@ -5687,7 +5694,6 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         statusLine.isHidden = attention == nil
         if let attention { statusLine.setAccessibilityLabel("\(binding.target.name) \(attention.text)") }
         row.statusLine = statusLine
-        let labels = verticalStack([name, statusLine], spacing: 2)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -5705,7 +5711,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         }
         recorder.controlSize = .small
         recorder.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
-        recorder.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        recorder.widthAnchor.constraint(equalToConstant: isCard ? 92 : 108).isActive = true
         recorder.heightAnchor.constraint(equalToConstant: 26).isActive = true
         recorder.setAccessibilityLabel("\(binding.target.name) 快捷键录制")
         if let native = VerifiedLaunchHotKeys.shortcut(for: binding.target.bundleIdentifier) {
@@ -5740,25 +5746,42 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         moreButton.setAccessibilityRole(.button)
         moreButton.toolTip = "更多操作：更换应用、呼出、自动打开、说明、移除"
 
-        let rowStack: NSStackView
         if isCard {
-            let identity = horizontalStack([icon, labels, switchIndicator], spacing: 8)
+            let body = NSView()
+            pin(body, inside: row.contentView ?? row,
+                insets: NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10))
+            let identity = horizontalStack([icon, name, switchIndicator], spacing: 6)
             identity.alignment = .centerY
             let controls = horizontalStack([recorder, spacer, moreButton], spacing: 8)
             controls.alignment = .centerY
-            rowStack = verticalStack([identity, controls], spacing: 10)
-            identity.widthAnchor.constraint(equalTo: rowStack.widthAnchor).isActive = true
-            controls.widthAnchor.constraint(equalTo: rowStack.widthAnchor).isActive = true
+            for view in [identity, statusLine, controls] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                body.addSubview(view)
+            }
+            // Keep optical centers and the action baseline independent of name
+            // wrapping or warning visibility. Normalized icons share one box.
+            NSLayoutConstraint.activate([
+                identity.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+                identity.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+                identity.topAnchor.constraint(equalTo: body.topAnchor),
+                identity.heightAnchor.constraint(equalToConstant: 32),
+                statusLine.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+                statusLine.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+                statusLine.topAnchor.constraint(equalTo: identity.bottomAnchor, constant: 2),
+                statusLine.heightAnchor.constraint(equalToConstant: 13),
+                controls.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+                controls.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+                controls.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+                controls.heightAnchor.constraint(equalToConstant: 26)
+            ])
         } else {
-            rowStack = horizontalStack([icon, labels, switchIndicator, spacer, recorder, moreButton], spacing: 8)
+            let labels = verticalStack([name, statusLine], spacing: 2)
+            let rowStack = horizontalStack([icon, labels, switchIndicator, spacer, recorder, moreButton], spacing: 8)
             rowStack.alignment = .centerY
+            pin(rowStack, inside: row.contentView ?? row,
+                insets: NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10))
         }
         row.recorderButton = recorder
-        pin(
-            rowStack,
-            inside: row.contentView ?? row,
-            insets: NSEdgeInsets(top: isCard ? 12 : 8, left: 10, bottom: isCard ? 12 : 8, right: 10)
-        )
         onBindingRowBuilt?(row)
         return row
     }
@@ -6639,9 +6662,11 @@ private enum SelfTest {
                 let controller = SettingsController(model: model)
                 releasedController = controller
                 if let presentation { controller.restorePresentation(presentation) }
-                controller.searchField.stringValue = "规模应用 1"
-                controller.rebuildBindingRows()
-                controller.window.contentView?.layoutSubtreeIfNeeded()
+                for query in ["规模应用 1", "", "规模应用 2", "", "规模应用 1"] {
+                    controller.searchField.stringValue = query
+                    controller.rebuildBindingRows()
+                    controller.window.contentView?.layoutSubtreeIfNeeded()
+                }
                 releasedRow = controller.displayedBindingRows.first
                 passed = releasedRow != nil && passed
                 controller.window.makeFirstResponder(releasedRow?.recorderButton)
@@ -6666,7 +6691,13 @@ private enum SelfTest {
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("qt-layout-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: fixtureRoot) }
         let app = makeFixtureApp(named: "LayoutFixture", bundleID: "test.layout.fixture", in: fixtureRoot)
-        let bindings = makeScaleBindings(50, bundleID: "test.layout.fixture", path: app.path)
+        var bindings = makeScaleBindings(50, bundleID: "test.layout.fixture", path: app.path)
+        for (index, name) in ["Muse", "Adobe Photoshop 2026", "一个很长的应用名称用于检查换行"].enumerated() {
+            bindings[index].target = TargetApplication(bundleIdentifier: "test.layout.fixture", name: name, path: app.path)
+        }
+        func textFields(in view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { textFields(in: $0) }
+        }
         let model = QuickToggleModel(diagnosticMode: true, previewMode: true, previewBindings: bindings)
         defer { model.close() }
         let controller = SettingsController(model: model)
@@ -6688,15 +6719,39 @@ private enum SelfTest {
                     require(frame.minX >= -1 && frame.maxX <= controller.bindingsStack.bounds.width + 1,
                             "\(layout) horizontal overflow at \(width): \(frame)")
                     if let recorder = row.recorderButton {
-                        require(row.bounds.insetBy(dx: -1, dy: -1).contains(recorder.convert(recorder.bounds, to: row)),
+                        let recorderFrame = recorder.convert(recorder.bounds, to: row)
+                        require(row.bounds.insetBy(dx: -1, dy: -1).contains(recorderFrame),
                                 "shortcut clipped at \(width)")
+                        if layout == .cards {
+                            let more = recorder.superview?.subviews.compactMap { $0 as? NSButton }
+                                .first { $0 !== recorder }
+                            require(more.map { abs($0.convert($0.bounds, to: row).midY - recorderFrame.midY) < 1 } == true,
+                                    "card actions visually misaligned at \(width)")
+                            if let name = textFields(in: row).first(where: { $0 !== row.statusLine }) {
+                                let nameFrame = name.convert(name.bounds, to: row)
+                                require(nameFrame.height <= 33 && !nameFrame.intersects(recorderFrame),
+                                        "wrapped name overlaps card actions at \(width)")
+                                if width <= 640 && name.stringValue == "Adobe Photoshop 2026" {
+                                    require(nameFrame.height > 20, "long card name did not wrap at \(width)")
+                                }
+                            } else { require(false, "card name missing") }
+                        }
                     }
                 }
                 if layout == .cards, rows.count > 3 {
                     let first = rows[0].convert(rows[0].bounds, to: controller.bindingsStack)
                     let second = rows[1].convert(rows[1].bounds, to: controller.bindingsStack)
-                    require(abs(first.minY - second.minY) < 1 && second.minX >= first.maxX + 7,
-                            "cards did not form columns at \(width)")
+                    let third = rows[2].convert(rows[2].bounds, to: controller.bindingsStack)
+                    let next = rows[3].convert(rows[3].bounds, to: controller.bindingsStack)
+                    require(abs(first.minY - second.minY) < 1 && abs(first.minY - third.minY) < 1
+                            && second.minX >= first.maxX + 7 && third.minX >= second.maxX + 7
+                            && abs(next.minX - first.minX) < 1 && abs(next.minY - first.minY) >= 103,
+                            "cards did not form three aligned columns at \(width)")
+                    let actionCenters = rows.prefix(3).compactMap { row in
+                        row.recorderButton.map { $0.convert($0.bounds, to: controller.bindingsStack).midY }
+                    }
+                    require(actionCenters.count == 3 && (actionCenters.max()! - actionCenters.min()!) < 1,
+                            "card action baseline changed with name length at \(width)")
                 }
                 guard let first = rows.first else { continue }
                 controller.listScroll.contentView.scroll(to: .zero)
@@ -6735,7 +6790,7 @@ private enum SelfTest {
             store.applicationLayout = .cards
             require(PreferenceStore(defaults: defaults).applicationLayout == .cards, "layout preference not persistent")
         }
-        print(failures.isEmpty ? "Compact layouts passed (list/cards, 560/640/920, focus, search, isolated persistence)"
+        print(failures.isEmpty ? "Compact layouts passed (list/three-column cards, 560/640/920, optical alignment, long names, focus, search, isolated persistence)"
               : "Compact layouts FAILED: \(failures.joined(separator: "; "))")
         return failures.isEmpty
     }
