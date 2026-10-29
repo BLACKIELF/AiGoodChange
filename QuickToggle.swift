@@ -293,6 +293,7 @@ private final class PreferenceStore {
         static let knownAvailableUpdate = "quickToggle.knownAvailableUpdate"
         static let knownAvailableUpdateNotes = "quickToggle.knownAvailableUpdateNotes"
         static let themeIdentifier = "quickToggle.themeIdentifier"
+        static let applicationLayout = "quickToggle.applicationLayout"
     }
 
     private let defaults: UserDefaults
@@ -320,6 +321,11 @@ private final class PreferenceStore {
     var themeIdentifier: String {
         get { defaults.string(forKey: Key.themeIdentifier) ?? "codexu.default" }
         set { defaults.set(newValue, forKey: Key.themeIdentifier) }
+    }
+
+    var applicationLayout: ApplicationLayout {
+        get { ApplicationLayout(rawValue: defaults.string(forKey: Key.applicationLayout) ?? "") ?? .list }
+        set { defaults.set(newValue.rawValue, forKey: Key.applicationLayout) }
     }
 
     var target: TargetApplication? {
@@ -492,14 +498,15 @@ private enum ThemeCatalog {
         var seen = Set<String>()
         return themes.filter { !$0.name.isEmpty && $0.light.isValid && $0.dark.isValid && seen.insert($0.id).inserted }
     }()
+    static let byID = Dictionary(uniqueKeysWithValues: bundled.map { ($0.id, $0) })
     private(set) static var selectedID = "codexu.default"
     static var isDefault: Bool { selectedID == "codexu.default" }
     static func variant(dark: Bool) -> ThemeVariant? {
-        let theme = bundled.first { $0.id == selectedID } ?? bundled.first { $0.id == "codexu.default" }
+        let theme = byID[selectedID] ?? byID["codexu.default"]
         return dark ? theme?.dark : theme?.light
     }
     static func select(_ id: String) {
-        let resolved = bundled.contains { $0.id == id } ? id : "codexu.default"
+        let resolved = byID[id] != nil ? id : "codexu.default"
         guard selectedID != resolved else { return }
         selectedID = resolved
         NotificationCenter.default.post(name: didChange, object: nil)
@@ -529,12 +536,37 @@ private enum VisualPalette {
               let value = UInt32(text.dropFirst(), radix: 16) else { return nil }
         return text.count == 9 ? color(value >> 8, alpha: CGFloat(value & 0xff) / 255) : color(value)
     }
-    static func primary(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.accent.primary) } ?? color(0x2866F7) }
-    static func primaryLight(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.accent.primaryLight) } ?? color(0x7BA0FF) }
-    static func secondary(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.accent.secondary) } ?? color(0x8B6DFF) }
-    static func highlight(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.accent.highlight) } ?? color(0xDAA3FA) }
-    static func selectionFill(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.selection.fill) } ?? primary(dark).withAlphaComponent(0.12) }
-    static func selectionStroke(_ dark: Bool) -> NSColor { ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.selection.stroke) } ?? primary(dark).withAlphaComponent(0.34) }
+    /// Immutable and bounded to the bundled palettes. Repaints never parse hex strings.
+    private struct Colors {
+        let primary, primaryLight, secondary, highlight: NSColor
+        let selectionFill, selectionStroke, selectedText, surfaceTint: NSColor
+        let surfaceOpacity: CGFloat
+        init(_ variant: ThemeVariant?) {
+            primary = variant.flatMap { parseColor($0.accent.primary) } ?? color(0x2866F7)
+            primaryLight = variant.flatMap { parseColor($0.accent.primaryLight) } ?? color(0x7BA0FF)
+            secondary = variant.flatMap { parseColor($0.accent.secondary) } ?? color(0x8B6DFF)
+            highlight = variant.flatMap { parseColor($0.accent.highlight) } ?? color(0xDAA3FA)
+            selectionFill = variant.flatMap { parseColor($0.selection.fill) } ?? primary.withAlphaComponent(0.12)
+            selectionStroke = variant.flatMap { parseColor($0.selection.stroke) } ?? primary.withAlphaComponent(0.34)
+            selectedText = variant.flatMap { parseColor($0.selection.foreground) } ?? primary
+            surfaceTint = variant.flatMap { parseColor($0.surfaceTint.color) } ?? primary
+            surfaceOpacity = variant?.surfaceTint.maximumOpacity ?? 0.05
+        }
+    }
+    private static let palettes = Dictionary(uniqueKeysWithValues: ThemeCatalog.bundled.map {
+        ($0.id, (light: Colors($0.light), dark: Colors($0.dark)))
+    })
+    private static let fallback = Colors(nil)
+    private static func colors(_ dark: Bool) -> Colors {
+        guard let palette = palettes[ThemeCatalog.selectedID] ?? palettes["codexu.default"] else { return fallback }
+        return dark ? palette.dark : palette.light
+    }
+    static func primary(_ dark: Bool) -> NSColor { colors(dark).primary }
+    static func primaryLight(_ dark: Bool) -> NSColor { colors(dark).primaryLight }
+    static func secondary(_ dark: Bool) -> NSColor { colors(dark).secondary }
+    static func highlight(_ dark: Bool) -> NSColor { colors(dark).highlight }
+    static func selectionFill(_ dark: Bool) -> NSColor { colors(dark).selectionFill }
+    static func selectionStroke(_ dark: Bool) -> NSColor { colors(dark).selectionStroke }
     static func foreground(_ dark: Bool) -> NSColor { dark ? .white : .black }
     static func opaqueSurface() -> Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency || increasedContrast()
@@ -542,7 +574,7 @@ private enum VisualPalette {
     static let accent = NSColor(name: nil) { primary(isDark($0)) }
     static let selectedText = NSColor(name: nil) { appearance in
         let dark = isDark(appearance)
-        return ThemeCatalog.variant(dark: dark).flatMap { parseColor($0.selection.foreground) } ?? primary(dark)
+        return colors(dark).selectedText
     }
     static let secondaryText = NSColor(name: nil) { foreground(isDark($0)).withAlphaComponent(isDark($0) ? 0.72 : 0.66) }
     static let tertiaryText = NSColor(name: nil) { foreground(isDark($0)).withAlphaComponent(0.56) }
@@ -563,9 +595,8 @@ private enum VisualPalette {
         shape.fill()
         NSColor.white.withAlphaComponent(controlOpacity * (dark ? 0.4 : 1.4)).setFill()
         shape.fill()
-        let tint = ThemeCatalog.variant(dark: dark)?.surfaceTint
-        (tint.flatMap { parseColor($0.color) } ?? primary(dark))
-            .withAlphaComponent((tint?.maximumOpacity ?? 0.05) * (ThemeCatalog.isDefault ? 0.22 : 0.75)).setFill()
+        let palette = colors(dark)
+        palette.surfaceTint.withAlphaComponent(palette.surfaceOpacity * (ThemeCatalog.isDefault ? 0.22 : 0.75)).setFill()
         shape.fill()
         NSGradient(colors: [.white.withAlphaComponent(dark ? 0.13 : 0.36),
                             primaryLight(dark).withAlphaComponent(dark ? 0.065 : 0.035), .clear])?
@@ -3034,6 +3065,7 @@ private final class QuickToggleModel {
     private(set) var isEnabled: Bool
     private(set) var settingsShortcut: Shortcut
     private(set) var themeIdentifier = "codexu.default"
+    private(set) var applicationLayout: ApplicationLayout = .list
     private(set) var statusMessage = "添加应用后，AiGoodChange 会自动分配快捷键。"
     private(set) var statusTone: StatusTone = .info
     private(set) var updateCheckState: UpdateCheckState = .idle
@@ -3064,6 +3096,7 @@ private final class QuickToggleModel {
                 // Read an in-memory copy directly; the migration loader writes defaults.
                 let defaults = UserDefaults(suiteName: "com.quicktoggle.app")
                 themeIdentifier = defaults?.string(forKey: "quickToggle.themeIdentifier") ?? "codexu.default"
+                applicationLayout = ApplicationLayout(rawValue: defaults?.string(forKey: "quickToggle.applicationLayout") ?? "") ?? .list
                 if let data = defaults?.data(forKey: "quickToggle.bindings"),
                    let saved = try? JSONDecoder().decode([AppBinding].self, from: data) {
                     bindings = saved
@@ -3083,6 +3116,7 @@ private final class QuickToggleModel {
             let store = PreferenceStore()
             preferences = store
             themeIdentifier = store.themeIdentifier
+            applicationLayout = store.applicationLayout
             bindings = store.loadBindings()
             occupiedHotKeys = store.loadOccupiedHotKeys()
             shortcutConflictKnowledge = store.loadShortcutConflictKnowledge()
@@ -3278,9 +3312,17 @@ private final class QuickToggleModel {
 
     func selectTheme(_ identifier: String) {
         guard ThemeCatalog.bundled.contains(where: { $0.id == identifier }) else { return }
+        guard themeIdentifier != identifier || ThemeCatalog.selectedID != identifier else { return }
         themeIdentifier = identifier
         preferences?.themeIdentifier = identifier
         ThemeCatalog.select(identifier)
+        onChange?()
+    }
+
+    func selectApplicationLayout(_ layout: ApplicationLayout) {
+        guard applicationLayout != layout else { return }
+        applicationLayout = layout
+        preferences?.applicationLayout = layout
         onChange?()
     }
 
@@ -3750,8 +3792,7 @@ private final class QuickToggleModel {
             return
         }
         guard !isCheckingForUpdate else { return }
-        isCheckingForUpdate = true
-        updateCheckState = .checking
+        beginUpdateCheck()
         preferences?.lastUpdateCheckDate = Date()
         if userInitiated {
             reportStatus("正在检查更新…")
@@ -3759,23 +3800,26 @@ private final class QuickToggleModel {
             onChange?()
         }
         UpdateCheckService.fetchLatestTag { [weak self] result in
-            guard let self else { return }
-            self.isCheckingForUpdate = false
-            switch result {
-            case .failure(let failure):
-                // A failed lookup must not erase a previously found update;
-                // only a fresh authoritative answer may replace that knowledge.
-                if !self.updateCheckState.isAvailable {
-                    self.updateCheckState = .failed(reason: failure.userDescription)
-                }
-                if userInitiated {
-                    self.reportStatus("检查更新失败：\(failure.userDescription)。", tone: .warning)
-                }
-            case .success(let release):
-                self.applyUpdateTag(release, userInitiated: userInitiated)
-            }
-            self.onChange?()
+            self?.completeUpdateCheck(result, userInitiated: userInitiated)
         }
+    }
+
+    fileprivate func beginUpdateCheck() {
+        isCheckingForUpdate = true
+        // The separate progress flag drives the button without erasing known releases.
+        if !updateCheckState.isAvailable { updateCheckState = .checking }
+    }
+
+    fileprivate func completeUpdateCheck(_ result: Result<UpdateCheckService.LatestRelease, UpdateCheckService.Failure>, userInitiated: Bool) {
+        isCheckingForUpdate = false
+        switch result {
+        case .failure(let failure):
+            if !updateCheckState.isAvailable { updateCheckState = .failed(reason: failure.userDescription) }
+            if userInitiated { reportStatus("检查更新失败：\(failure.userDescription)。", tone: .warning) }
+        case .success(let release):
+            applyUpdateTag(release, userInitiated: userInitiated)
+        }
+        onChange?()
     }
 
     func checkForUpdateIfDue() {
@@ -4133,9 +4177,11 @@ private final class StatusDotView: NSView {
 }
 
 private final class BindingActionRow: NSBox {
+    var isCard = false
     var onPress: (() -> Void)?
     var onRequestDelete: (() -> Void)?
     var onArrow: ((Bool) -> Void)?
+    var onHorizontalArrow: ((Bool) -> Void)?
     /// The row's recorder control, so focus can be re-anchored to it after a
     /// rebuild replaces all rows.
     fileprivate weak var recorderButton: ShortcutRecorderButton?
@@ -4217,7 +4263,11 @@ private final class BindingActionRow: NSBox {
         }
     }
     override func draw(_ dirtyRect: NSRect) {
+        if isCard {
+            VisualPalette.drawSurface(in: bounds, radius: 12, dark: VisualPalette.isDark(effectiveAppearance))
+        }
         super.draw(dirtyRect)
+        guard !isCard else { return }
         let dark = VisualPalette.isDark(effectiveAppearance)
         VisualPalette.foreground(dark).withAlphaComponent(VisualPalette.increasedContrast() ? 0.30 : 0.07).setStroke()
         let line = NSBezierPath()
@@ -4258,6 +4308,9 @@ private final class BindingActionRow: NSBox {
             onRequestDelete?()
         } else if modifiers.isEmpty && isArrowKey, onArrow != nil, !event.isARepeat {
             onArrow?(event.keyCode == UInt16(kVK_DownArrow))
+        } else if modifiers.isEmpty && [UInt16(kVK_LeftArrow), UInt16(kVK_RightArrow)].contains(event.keyCode),
+                  let onHorizontalArrow, !event.isARepeat {
+            onHorizontalArrow(event.keyCode == UInt16(kVK_RightArrow))
         } else {
             super.keyDown(with: event)
         }
@@ -4323,8 +4376,21 @@ private final class QuickToggleWindow: NSWindow {
     }
 }
 
+private enum ApplicationLayout: String { case cards, list }
+
 private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindowDelegate {
     let window: QuickToggleWindow
+    var onWindowClosed: (() -> Void)?
+    struct Presentation {
+        let frame: NSRect
+        let query: String
+        let scope: Int
+        let scrollY: CGFloat
+    }
+    var presentation: Presentation {
+        Presentation(frame: window.frame, query: searchField.stringValue,
+                     scope: scopeControl.selectedSegment, scrollY: listScroll.contentView.bounds.minY)
+    }
     private let model: QuickToggleModel
     fileprivate let bindingsStack = FlippedStackView()
     fileprivate let listScroll = NSScrollView()
@@ -4348,6 +4414,16 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
     private let statusBanner = NSView()
     fileprivate let searchField = NSSearchField()
     fileprivate let scopeControl = NSSegmentedControl()
+    fileprivate let layoutControl = NSSegmentedControl()
+    private var renderedLayout: ApplicationLayout = .list
+    private var renderedColumns = 1
+    fileprivate var displayedBindingRows: [BindingActionRow] {
+        bindingsStack.arrangedSubviews.flatMap { view -> [BindingActionRow] in
+            if let row = view as? BindingActionRow { return [row] }
+            return (view as? NSStackView)?.arrangedSubviews.compactMap { $0 as? BindingActionRow } ?? []
+        }
+    }
+    var isVisible: Bool { window.isVisible || preferencesPanel?.isVisible == true }
     private let listTitle = NSTextField(labelWithString: "我的应用")
     private let preferencesButton = GlassActionButton()
     fileprivate let themePicker = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -4385,9 +4461,9 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
     init(model: QuickToggleModel) {
         self.model = model
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let height = min(690, max(500, visible.height - 48))
+        let height = min(620, max(500, visible.height - 48))
         window = QuickToggleWindow(
-            contentRect: NSRect(x: 0, y: 0, width: min(760, visible.width - 48), height: height),
+            contentRect: NSRect(x: 0, y: 0, width: min(640, visible.width - 48), height: height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -4397,7 +4473,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 600, height: 500)
+        window.minSize = NSSize(width: 560, height: 500)
         window.delegate = self
         window.onFind = { [weak self] in self?.focusSearch() }
         window.onAdd = { [weak self] in self?.chooseApplication() }
@@ -4434,10 +4510,41 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         window.recalculateKeyViewLoop()
     }
 
+    func restorePresentation(_ saved: Presentation) {
+        window.setFrame(window.constrainFrameRect(saved.frame, to: NSScreen.main), display: false)
+        searchField.stringValue = saved.query
+        scopeControl.selectedSegment = saved.scope
+        rebuildBindingRows()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let maxY = max(0, bindingsStack.bounds.height - listScroll.contentSize.height)
+        listScroll.contentView.scroll(to: NSPoint(x: 0, y: min(saved.scrollY, maxY)))
+        listScroll.reflectScrolledClipView(listScroll.contentView)
+    }
+
+    /// The model owns hotkeys and preferences; hidden UI can be discarded safely.
+    func prepareForBackground() {
+        helpPopover.performClose(nil)
+        addPopover.performClose(nil)
+        if let panel = preferencesPanel, panel.sheetParent != nil { window.endSheet(panel) }
+        preferencesPanel?.orderOut(nil)
+        window.orderOut(nil)
+        window.makeFirstResponder(nil)
+        window.delegate = nil
+        window.contentView = nil
+        preferencesPanel?.contentView = nil
+        bindingRowCache.removeAll()
+        rowStatusLabels.removeAll()
+        for view in bindingsStack.arrangedSubviews {
+            bindingsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
     func refresh() {
         themePicker.selectItem(at: ThemeCatalog.bundled.firstIndex { $0.id == model.themeIdentifier } ?? 0)
+        layoutControl.selectedSegment = model.applicationLayout == .cards ? 0 : 1
         var restoredFocusScrollTarget: BindingActionRow?
-        if lastRenderedBindings != model.bindings || lastRenderedOccupied != model.occupiedHotKeys {
+        if lastRenderedBindings != model.bindings || lastRenderedOccupied != model.occupiedHotKeys || renderedLayout != model.applicationLayout {
             let bindingsChanged = lastRenderedBindings != model.bindings
             lastRenderedBindings = model.bindings
             lastRenderedOccupied = model.occupiedHotKeys
@@ -4457,13 +4564,17 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         statusDot.color = model.statusTone == .info
             ? (model.registeredShortcutCount > 0 ? .systemGreen : .secondaryLabelColor)
             : model.statusTone.color
+        let bindingsByID = Dictionary(uniqueKeysWithValues: model.bindings.map { ($0.id, $0) })
         rowStatusLabels.forEach { id, label in
-            guard let binding = model.bindings.first(where: { $0.id == id }) else { return }
+            guard let binding = bindingsByID[id] else { return }
             if let attention = model.rowStatusAttention(for: binding) {
                 label.stringValue = attention.text
                 label.textColor = attention.color
+                label.setAccessibilityLabel("\(binding.target.name) \(attention.text)")
                 label.isHidden = false
             } else {
+                label.stringValue = ""
+                label.setAccessibilityLabel(nil)
                 label.isHidden = true
             }
         }
@@ -4581,7 +4692,18 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         addButton.setAccessibilityLabel("添加目标应用")
         addButton.setAccessibilityHelp("打开已安装应用列表；添加后自动分配一个可用的数字快捷键。")
         addButton.emphasized = true
-        let listHeader = horizontalStack([listTitle, countLabel, listHeaderSpacer, addButton], spacing: 8)
+        layoutControl.segmentCount = 2
+        for (index, label) in ["卡片", "列表"].enumerated() {
+            layoutControl.setLabel(label, forSegment: index)
+            layoutControl.setWidth(42, forSegment: index)
+        }
+        layoutControl.trackingMode = .selectOne
+        layoutControl.segmentStyle = .rounded
+        layoutControl.controlSize = .small
+        layoutControl.target = self
+        layoutControl.action = #selector(changeLayout(_:))
+        layoutControl.setAccessibilityLabel("应用布局")
+        let listHeader = horizontalStack([listTitle, countLabel, listHeaderSpacer, layoutControl, addButton], spacing: 8)
         listHeader.alignment = .centerY
 
         searchField.placeholderString = "搜索应用或快捷键"
@@ -4610,7 +4732,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         bindingsStack.orientation = .vertical
         bindingsStack.alignment = .leading
         bindingsStack.distribution = .fill
-        bindingsStack.spacing = 4
+        bindingsStack.spacing = 3
         bindingsStack.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         listScroll.documentView = bindingsStack
         listScroll.hasVerticalScroller = true
@@ -4642,8 +4764,8 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         statusBanner.layer?.cornerRadius = 8
         pin(statusRow, inside: statusBanner, insets: NSEdgeInsets(top: 5, left: 9, bottom: 5, right: 9))
 
-        let applicationsStack = verticalStack([listHeader, filterRow, listScroll], spacing: 12)
-        pin(applicationsStack, inside: applicationsCard, insets: NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14))
+        let applicationsStack = verticalStack([listHeader, filterRow, listScroll], spacing: 8)
+        pin(applicationsStack, inside: applicationsCard, insets: NSEdgeInsets(top: 10, left: 10, bottom: 8, right: 10))
         [listHeader, filterRow, listScroll].forEach {
             $0.widthAnchor.constraint(equalTo: applicationsStack.widthAnchor).isActive = true
         }
@@ -5001,7 +5123,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         footer.alignment = .centerY
         buildPreferencesPanel(views: [runtimeCard, updateCard, guideButton, guideCard, appGuideButton, appGuideCard])
 
-        let rootStack = verticalStack([header, applicationsCard, statusBanner, footer], spacing: 12)
+        let rootStack = verticalStack([header, applicationsCard, statusBanner, footer], spacing: 8)
         rootStack.translatesAutoresizingMaskIntoConstraints = false
         material.addSubview(rootStack)
         header.setContentHuggingPriority(.required, for: .vertical)
@@ -5010,10 +5132,10 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         guideButton.setContentHuggingPriority(.required, for: .vertical)
         appGuideButton.setContentHuggingPriority(.required, for: .vertical)
         NSLayoutConstraint.activate([
-            rootStack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 20),
-            rootStack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -20),
-            rootStack.topAnchor.constraint(equalTo: material.topAnchor, constant: 42),
-            rootStack.bottomAnchor.constraint(equalTo: material.bottomAnchor, constant: -14),
+            rootStack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 16),
+            rootStack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -16),
+            rootStack.topAnchor.constraint(equalTo: material.topAnchor, constant: 36),
+            rootStack.bottomAnchor.constraint(equalTo: material.bottomAnchor, constant: -12),
             header.widthAnchor.constraint(equalTo: rootStack.widthAnchor),
             applicationsCard.widthAnchor.constraint(equalTo: rootStack.widthAnchor),
             statusBanner.widthAnchor.constraint(equalTo: rootStack.widthAnchor),
@@ -5096,6 +5218,10 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         return true
     }
 
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === window { onWindowClosed?() }
+    }
+
     private func focusSearch() {
         guard window.attachedSheet == nil else { return }
         window.makeFirstResponder(searchField)
@@ -5162,7 +5288,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
 
     private func captureBindingFocusAnchor() -> BindingFocusAnchor? {
         guard let responder = window.firstResponder as? NSView else { return nil }
-        let rows = bindingsStack.arrangedSubviews.compactMap { $0 as? BindingActionRow }
+        let rows = displayedBindingRows
         var current: NSView? = responder
         while let view = current {
             if let row = view as? BindingActionRow,
@@ -5182,7 +5308,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
 
     private func restoreBindingFocus(_ anchor: BindingFocusAnchor?) -> BindingActionRow? {
         guard let anchor else { return nil }
-        let rows = bindingsStack.arrangedSubviews.compactMap { $0 as? BindingActionRow }
+        let rows = displayedBindingRows
         if let sameBinding = rows.first(where: { $0.identifier?.rawValue == anchor.bindingID.uuidString }) {
             if anchor.wasRecorder, let recorder = sameBinding.recorderButton {
                 window.makeFirstResponder(recorder)
@@ -5218,6 +5344,17 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             return listScroll.contentView.bounds.contains(frame)
         } ?? false
         let scope = ApplicationListScope(rawValue: scopeControl.selectedSegment) ?? .all
+        let showCards = model.applicationLayout == .cards && scope != .occupied
+        let columns = showCards ? cardColumnCount : 1
+        if renderedLayout != model.applicationLayout {
+            for entry in bindingRowCache.values { entry.widthConstraint.isActive = false }
+            bindingRowCache.removeAll()
+        }
+        let columnsChanged = renderedColumns != columns
+        renderedLayout = model.applicationLayout
+        renderedColumns = columns
+        bindingsStack.spacing = showCards ? 8 : 3
+        layoutControl.isEnabled = scope != .occupied
         addButton.title = scope == .occupied ? "添加占用…" : "添加应用…"
         addButton.setAccessibilityLabel(scope == .occupied ? "添加占用记录" : "添加目标应用")
         addButton.setAccessibilityHelp(scope == .occupied ? "记录其他软件已占用的组合，自动分配时会避开。" : "打开已安装应用列表；添加后自动分配一个可用的数字快捷键。")
@@ -5246,11 +5383,15 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
                     let widthConstraint: NSLayoutConstraint
                     if let cached = bindingRowCache[binding.id], cached.binding == binding {
                         rowView = cached.row
-                        widthConstraint = cached.widthConstraint
+                        if columnsChanged {
+                            cached.widthConstraint.isActive = false
+                            widthConstraint = bindingWidthConstraint(for: rowView, columns: columns)
+                        } else {
+                            widthConstraint = cached.widthConstraint
+                        }
                     } else {
                         rowView = makeBindingRow(binding)
-                        widthConstraint = rowView.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor)
-                        freshViews.append(rowView)
+                        widthConstraint = bindingWidthConstraint(for: rowView, columns: columns)
                     }
                     nextCache[binding.id] = (rowView, binding, widthConstraint)
                     desired.append(rowView)
@@ -5263,12 +5404,38 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         }
         for (id, entry) in bindingRowCache where nextCache[id] == nil {
             if let binding = model.bindings.first(where: { $0.id == id }), binding == entry.binding {
-                nextCache[id] = entry
+                if columnsChanged {
+                    entry.widthConstraint.isActive = false
+                    nextCache[id] = (entry.row, entry.binding, bindingWidthConstraint(for: entry.row, columns: columns))
+                } else {
+                    nextCache[id] = entry
+                }
             }
         }
         bindingRowCache = nextCache
         rowStatusLabels = bindingRowCache.reduce(into: [UUID: NSTextField]()) { dict, entry in
             if let line = entry.value.row.statusLine { dict[entry.key] = line }
+        }
+        if showCards, !rows.isEmpty {
+            let cardViews = desired
+            // Release the old bands before moving cached cards into new bands.
+            for band in bindingsStack.arrangedSubviews.compactMap({ $0 as? NSStackView }) {
+                for card in band.arrangedSubviews {
+                    band.removeArrangedSubview(card)
+                    card.removeFromSuperview()
+                }
+            }
+            desired = stride(from: 0, to: cardViews.count, by: columns).map { start in
+                let band = horizontalStack(Array(cardViews[start..<min(start + columns, cardViews.count)]), spacing: 8)
+                band.alignment = .top
+                if start + columns > cardViews.count {
+                    let trailing = NSView()
+                    trailing.setContentHuggingPriority(.init(1), for: .horizontal)
+                    band.addArrangedSubview(trailing)
+                }
+                freshViews.append(band)
+                return band
+            }
         }
         desired.append(bottomSpacer)
         // Sync the stack with the desired sequence. When nothing was added,
@@ -5277,9 +5444,6 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         let current = bindingsStack.arrangedSubviews
         let identical = current.count == desired.count
             && zip(current, desired).allSatisfy { $0 === $1 }
-        if identical {
-
-        }
         for view in current where !desired.contains(where: { $0 === view }) {
             bindingsStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -5308,10 +5472,36 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             entry.widthConstraint.isActive = true
         }
         let restoredRow = restoreBindingFocus(focusAnchor)
-        window.recalculateKeyViewLoop()
+        if !identical { window.recalculateKeyViewLoop() }
         return scrollRestoredFocusIntoView && !identical && (focusedBindingChanged || focusedRowWasVisible)
             ? restoredRow : nil
-        }
+    }
+
+    private var cardColumnCount: Int {
+        let width = listScroll.contentSize.width > 0 ? listScroll.contentSize.width : window.frame.width - 52
+        return min(4, max(1, Int((width + 8) / 238)))
+    }
+
+    private func bindingWidthConstraint(for row: NSView, columns: Int) -> NSLayoutConstraint {
+        row.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor, multiplier: 1 / CGFloat(columns),
+                                   constant: -8 * CGFloat(columns - 1) / CGFloat(columns))
+    }
+
+    @objc fileprivate func changeLayout(_ sender: NSSegmentedControl) {
+        model.selectApplicationLayout(sender.selectedSegment == 0 ? .cards : .list)
+        refresh()
+        listScroll.contentView.scroll(to: .zero)
+        listScroll.reflectScrolledClipView(listScroll.contentView)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window,
+              model.applicationLayout == .cards,
+              scopeControl.selectedSegment != ApplicationListScope.occupied.rawValue else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        guard cardColumnCount != renderedColumns else { return }
+        rebuildBindingRows()
+    }
 
     private func scrollBindingRowIntoView(_ row: BindingActionRow) {
         window.contentView?.layoutSubtreeIfNeeded()
@@ -5330,8 +5520,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
     /// it. Visual only — never activates the app behind the row.
     fileprivate func revealBinding(_ id: UUID) {
         func currentRow() -> BindingActionRow? {
-            bindingsStack.arrangedSubviews
-                .compactMap { $0 as? BindingActionRow }
+            displayedBindingRows
                 .first { $0.identifier?.rawValue == id.uuidString }
         }
         var row = currentRow()
@@ -5373,7 +5562,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         callToAction.setAccessibilityHelp("打开已安装应用列表；添加后自动分配一个可用的数字快捷键。")
         callToAction.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
-        let hint = NSTextField(labelWithString: "之后点行内快捷键可换键，点行本身即可呼出应用。")
+        let hint = NSTextField(labelWithString: "点快捷键换键，点图标或名称更换应用。")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
 
@@ -5444,14 +5633,17 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
 
     private func makeBindingRow(_ binding: AppBinding) -> BindingActionRow {
         let row = BindingActionRow()
+        let isCard = model.applicationLayout == .cards
+        row.isCard = isCard
         row.identifier = NSUserInterfaceItemIdentifier(binding.id.uuidString)
         row.onPress = { [weak self] in self?.chooseReplacement(for: binding.id) }
         row.boxType = .custom
-        row.cornerRadius = 8
+        row.cornerRadius = isCard ? 12 : 8
+        row.contentViewMargins = .zero
         row.borderWidth = 1
         row.borderColor = .clear
         row.fillColor = .clear
-        row.heightAnchor.constraint(equalToConstant: 60).isActive = true
+        row.heightAnchor.constraint(equalToConstant: isCard ? 100 : 52).isActive = true
         row.setAccessibilityLabel("\(binding.target.name) 快捷键设置")
         row.setAccessibilityHelp("点图标、名称或空白处更换应用，保留原快捷键；聚焦后按空格或回车选择，↑↓ 移动到相邻行，删除键移除（会先确认）。")
         row.toolTip = "更换 \(binding.target.name)，保留\(binding.shortcut?.displayName ?? "未设置的快捷键")"
@@ -5459,6 +5651,12 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         row.onArrow = { [weak self, weak row] isDown in
             guard let self, let row else { return }
             self.moveRowFocus(from: row, isDown: isDown)
+        }
+        if isCard {
+            row.onHorizontalArrow = { [weak self, weak row] isRight in
+                guard let self, let row else { return }
+                self.moveRowFocus(from: row, isDown: isRight, horizontal: true)
+            }
         }
 
         let icon = NSImageView()
@@ -5480,19 +5678,16 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         switchIndicator.heightAnchor.constraint(equalToConstant: 16).isActive = true
         switchIndicator.setAccessibilityElement(false)
 
-        let labels: NSView
-        if let attention = model.rowStatusAttention(for: binding) {
-            let statusLine = NSTextField(labelWithString: attention.text)
-            statusLine.font = .systemFont(ofSize: 10.5)
-            statusLine.textColor = attention.color
-            statusLine.lineBreakMode = .byTruncatingTail
-            statusLine.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            statusLine.setAccessibilityLabel("\(binding.target.name) \(attention.text)")
-            row.statusLine = statusLine
-            labels = verticalStack([name, statusLine], spacing: 3)
-        } else {
-            labels = name
-        }
+        let attention = model.rowStatusAttention(for: binding)
+        let statusLine = NSTextField(labelWithString: attention?.text ?? "")
+        statusLine.font = .systemFont(ofSize: 10.5)
+        statusLine.textColor = attention?.color ?? .secondaryLabelColor
+        statusLine.lineBreakMode = .byTruncatingTail
+        statusLine.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLine.isHidden = attention == nil
+        if let attention { statusLine.setAccessibilityLabel("\(binding.target.name) \(attention.text)") }
+        row.statusLine = statusLine
+        let labels = verticalStack([name, statusLine], spacing: 2)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -5545,13 +5740,24 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         moreButton.setAccessibilityRole(.button)
         moreButton.toolTip = "更多操作：更换应用、呼出、自动打开、说明、移除"
 
-        let rowStack = horizontalStack([icon, labels, switchIndicator, spacer, recorder, moreButton], spacing: 10)
-        rowStack.alignment = .centerY
+        let rowStack: NSStackView
+        if isCard {
+            let identity = horizontalStack([icon, labels, switchIndicator], spacing: 8)
+            identity.alignment = .centerY
+            let controls = horizontalStack([recorder, spacer, moreButton], spacing: 8)
+            controls.alignment = .centerY
+            rowStack = verticalStack([identity, controls], spacing: 10)
+            identity.widthAnchor.constraint(equalTo: rowStack.widthAnchor).isActive = true
+            controls.widthAnchor.constraint(equalTo: rowStack.widthAnchor).isActive = true
+        } else {
+            rowStack = horizontalStack([icon, labels, switchIndicator, spacer, recorder, moreButton], spacing: 8)
+            rowStack.alignment = .centerY
+        }
         row.recorderButton = recorder
         pin(
             rowStack,
             inside: row.contentView ?? row,
-            insets: NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 10)
+            insets: NSEdgeInsets(top: isCard ? 12 : 8, left: 10, bottom: isCard ? 12 : 8, right: 10)
         )
         onBindingRowBuilt?(row)
         return row
@@ -5804,8 +6010,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         guard let rawValue = sender.identifier?.rawValue,
               let id = UUID(uuidString: rawValue),
               let binding = model.bindings.first(where: { $0.id == id }),
-              let row = bindingsStack.arrangedSubviews
-                  .compactMap({ $0 as? BindingActionRow })
+              let row = displayedBindingRows
                   .first(where: { $0.identifier?.rawValue == rawValue }) else { return }
         if helpPopover.isShown { helpPopover.performClose(nil) }
         let controller = NSViewController()
@@ -5836,10 +6041,11 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         confirmRemoval(of: binding)
     }
 
-    private func moveRowFocus(from row: BindingActionRow, isDown: Bool) {
-        let rows = bindingsStack.arrangedSubviews.compactMap { $0 as? BindingActionRow }
+    private func moveRowFocus(from row: BindingActionRow, isDown: Bool, horizontal: Bool = false) {
+        let rows = displayedBindingRows
         guard let index = rows.firstIndex(where: { $0 === row }) else { return }
-        let targetIndex = index + (isDown ? 1 : -1)
+        let step = horizontal ? 1 : renderedColumns
+        let targetIndex = index + (isDown ? step : -step)
         guard rows.indices.contains(targetIndex) else {
             if !isDown {
                 window.makeFirstResponder(searchField)
@@ -5847,7 +6053,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             }
             return
         }
-        window.makeFirstResponder(rows[targetIndex])
+        if window.makeFirstResponder(rows[targetIndex]) { scrollBindingRowIntoView(rows[targetIndex]) }
     }
 
     private func confirmRemoval(of binding: AppBinding) {
@@ -5941,11 +6147,11 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
 
     func interfaceLayoutFailures() -> [String] {
         var failures: [String] = []
-        for size in [NSSize(width: 600, height: 500), NSSize(width: 760, height: 690), NSSize(width: 1080, height: 760)] {
+        for size in [NSSize(width: 560, height: 500), NSSize(width: 640, height: 620), NSSize(width: 1080, height: 760)] {
             window.setContentSize(size)
             window.contentView?.layoutSubtreeIfNeeded()
             guard let root = window.contentView else { continue }
-            for (name, view) in [("search", searchField as NSView), ("add", addButton), ("feedback", statusBanner), ("preferences", preferencesButton), ("theme", themePicker)] {
+            for (name, view) in [("search", searchField as NSView), ("add", addButton), ("feedback", statusBanner), ("preferences", preferencesButton), ("theme", themePicker), ("layout", layoutControl), ("enable", enableButton), ("settingsShortcut", settingsShortcutRecorder)] {
                 let rect = view.convert(view.bounds, to: root)
                 if rect.width < 20 || rect.height < 10 || !root.bounds.insetBy(dx: -1, dy: -1).contains(rect) {
                     failures.append("\(name) clipped at \(Int(size.width))x\(Int(size.height)): \(rect)")
@@ -6010,9 +6216,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let model: QuickToggleModel
     private var statusItem: NSStatusItem?
     private var settings: SettingsController?
+    private var settingsPresentation: SettingsController.Presentation?
     private var previousApplication: NSRunningApplication?
     private var lastHotKeyRecovery = Date.distantPast
     private var updateCheckTimer: Timer?
+    private var statusMenuGeneration = 0
 
     override init() {
         #if QUICKTOGGLE_PREVIEW
@@ -6070,13 +6278,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         recoverHotKeysIfNeeded()
         refreshInterface()
     }
+    func applicationDidHide(_ notification: Notification) { releaseSettings() }
     func applicationWillTerminate(_ notification: Notification) {
         updateCheckTimer?.invalidate()
         model.close()
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        statusMenuGeneration += 1
         recoverHotKeysIfNeeded()
+        populateStatusMenu(menu)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        let generation = statusMenuGeneration
+        // Let the selected item's action finish before dropping menu icons.
+        DispatchQueue.main.async { [weak self, weak menu] in
+            guard self?.statusMenuGeneration == generation else { return }
+            menu?.removeAllItems()
+        }
     }
 
     private func installStatusItem() {
@@ -6087,12 +6309,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             button.toolTip = "AiGoodChange"
         }
         statusItem = item
-        refreshMenu()
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        refreshInterface()
     }
 
     private func refreshInterface() {
-        settings?.refresh()
-        refreshMenu()
+        if settings?.isVisible == true && !NSApp.isHidden { settings?.refresh() }
+        if case .available(let latest) = model.updateCheckState {
+            statusItem?.button?.toolTip = "AiGoodChange · 发现新版本 \(latest)"
+        } else {
+            statusItem?.button?.toolTip = "AiGoodChange"
+        }
     }
 
     private static let displayVersion: String = {
@@ -6100,9 +6329,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         return "\(appVersion) (build \(build))"
     }()
 
-    private func refreshMenu() {
-        guard let statusItem else { return }
-        let menu = NSMenu()
+    private func populateStatusMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
         addMenuItem("打开 AiGoodChange", action: #selector(showSettingsAction), key: ",", to: menu)
         let state = NSMenuItem(title: model.previewMode ? "界面预览 · 配置副本" : (model.isEnabled ? "\(model.registeredShortcutCount) 个应用快捷键已注册" : "应用快捷键已暂停"), action: nil, keyEquivalent: "")
         state.isEnabled = false
@@ -6150,15 +6378,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(detailsItem)
         menu.addItem(.separator())
         addMenuItem("退出", action: #selector(quitAction), key: "q", to: menu)
-        if let button = statusItem.button {
-            if case .available(let latest) = model.updateCheckState {
-                button.toolTip = "AiGoodChange · 发现新版本 \(latest)"
-            } else {
-                button.toolTip = "AiGoodChange"
-            }
-        }
-        menu.delegate = self
-        statusItem.menu = menu
     }
 
     private func addMenuItem(
@@ -6178,8 +6397,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
            frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             previousApplication = frontmost
         }
-        if settings == nil { settings = SettingsController(model: model) }
+        if settings == nil {
+            let controller = SettingsController(model: model)
+            settings = controller
+            if let settingsPresentation { controller.restorePresentation(settingsPresentation) }
+            controller.onWindowClosed = { [weak self, weak controller] in
+                DispatchQueue.main.async { [weak self, weak controller] in
+                    guard let self, let controller, self.settings === controller, !controller.isVisible else { return }
+                    self.releaseSettings()
+                }
+            }
+        }
         settings?.show()
+    }
+
+    private func releaseSettings() {
+        guard let settings else { return }
+        settingsPresentation = settings.presentation
+        settings.prepareForBackground()
+        self.settings = nil
     }
 
     private func toggleSettings() {
@@ -6189,7 +6425,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
 
         let shouldRestoreFocus = NSApp.isActive
-        window.orderOut(nil)
+        releaseSettings()
         if shouldRestoreFocus,
            let previousApplication,
            !previousApplication.isTerminated {
@@ -6382,7 +6618,126 @@ private enum SelfTest {
             && checkUpdateCheckLogic() && checkFocusRecoveryAndReassociation()
             && checkApplicationReplacementAndFinderBinding()
             && checkRowStructureAndMoreMenu() && checkStateAndKeyboardTransitions()
-            && checkScaleAndRecovery() && checkThemeSelection() && passed
+            && checkScaleAndRecovery() && checkThemeSelection() && checkCompactLayouts()
+            && checkBackgroundUIRelease() && passed
+    }
+
+    private static func checkBackgroundUIRelease() -> Bool {
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("qt-background-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let app = makeFixtureApp(named: "BackgroundFixture", bundleID: "test.background.fixture", in: fixtureRoot)
+        let bindings = makeScaleBindings(28, bundleID: "test.background.fixture", path: app.path)
+        let model = QuickToggleModel(diagnosticMode: true, previewMode: true, previewBindings: bindings)
+        model.selectApplicationLayout(.cards)
+        defer { model.close() }
+        var passed = true
+        var presentation: SettingsController.Presentation?
+        for _ in 0..<3 {
+            weak var releasedController: SettingsController?
+            weak var releasedRow: BindingActionRow?
+            autoreleasepool {
+                let controller = SettingsController(model: model)
+                releasedController = controller
+                if let presentation { controller.restorePresentation(presentation) }
+                controller.searchField.stringValue = "规模应用 1"
+                controller.rebuildBindingRows()
+                controller.window.contentView?.layoutSubtreeIfNeeded()
+                releasedRow = controller.displayedBindingRows.first
+                passed = releasedRow != nil && passed
+                controller.window.makeFirstResponder(releasedRow?.recorderButton)
+                presentation = controller.presentation
+                controller.prepareForBackground()
+                passed = controller.displayedBindingRows.isEmpty && controller.window.contentView == nil && passed
+            }
+            passed = releasedController == nil && releasedRow == nil && passed
+        }
+        let restored = SettingsController(model: model)
+        if let presentation { restored.restorePresentation(presentation) }
+        passed = restored.searchField.stringValue == "规模应用 1" && !restored.displayedBindingRows.isEmpty
+            && restored.displayedBindingRows.allSatisfy(\.isCard) && model.bindings == bindings && passed
+        print(passed ? "Background UI release passed (controllers, cards, reopen state, unchanged bindings)"
+              : "Background UI release FAILED")
+        return passed
+    }
+
+    private static func checkCompactLayouts() -> Bool {
+        var failures: [String] = []
+        func require(_ value: Bool, _ message: String) { if !value { failures.append(message) } }
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("qt-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let app = makeFixtureApp(named: "LayoutFixture", bundleID: "test.layout.fixture", in: fixtureRoot)
+        let bindings = makeScaleBindings(50, bundleID: "test.layout.fixture", path: app.path)
+        let model = QuickToggleModel(diagnosticMode: true, previewMode: true, previewBindings: bindings)
+        defer { model.close() }
+        let controller = SettingsController(model: model)
+        model.onChange = { controller.refresh() }
+        let originalTheme = model.themeIdentifier
+        for layout in [ApplicationLayout.cards, .list, .cards] {
+            controller.layoutControl.selectedSegment = layout == .cards ? 0 : 1
+            controller.changeLayout(controller.layoutControl)
+            for width: CGFloat in [560, 640, 920] {
+                controller.window.setContentSize(NSSize(width: width, height: 620))
+                controller.window.contentView?.layoutSubtreeIfNeeded()
+                controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: controller.window))
+                controller.window.contentView?.layoutSubtreeIfNeeded()
+                let rows = controller.displayedBindingRows
+                require(rows.count == bindings.count, "\(layout) lost apps at \(width)")
+                require(rows.allSatisfy { $0.isCard == (layout == .cards) }, "mixed row types after layout change")
+                for row in rows {
+                    let frame = row.convert(row.bounds, to: controller.bindingsStack)
+                    require(frame.minX >= -1 && frame.maxX <= controller.bindingsStack.bounds.width + 1,
+                            "\(layout) horizontal overflow at \(width): \(frame)")
+                    if let recorder = row.recorderButton {
+                        require(row.bounds.insetBy(dx: -1, dy: -1).contains(recorder.convert(recorder.bounds, to: row)),
+                                "shortcut clipped at \(width)")
+                    }
+                }
+                if layout == .cards, rows.count > 3 {
+                    let first = rows[0].convert(rows[0].bounds, to: controller.bindingsStack)
+                    let second = rows[1].convert(rows[1].bounds, to: controller.bindingsStack)
+                    require(abs(first.minY - second.minY) < 1 && second.minX >= first.maxX + 7,
+                            "cards did not form columns at \(width)")
+                }
+                guard let first = rows.first else { continue }
+                controller.listScroll.contentView.scroll(to: .zero)
+                controller.window.makeFirstResponder(first)
+                for _ in 0..<8 {
+                    guard let focused = controller.window.firstResponder as? BindingActionRow else { break }
+                    focused.onArrow?(true)
+                }
+                if let focused = controller.window.firstResponder as? BindingActionRow {
+                    let frame = focused.convert(focused.bounds, to: controller.listScroll.contentView)
+                    require(controller.listScroll.contentView.bounds.insetBy(dx: -1, dy: -1).contains(frame),
+                            "arrow focus offscreen in \(layout) at \(width)")
+                } else { require(false, "arrow focus lost in \(layout)") }
+            }
+            require(model.bindings == bindings && model.themeIdentifier == originalTheme,
+                    "layout switch changed configuration")
+        }
+        let visibleRow = controller.displayedBindingRows[0]
+        let retainedID = visibleRow.identifier
+        let recorder = visibleRow.recorderButton
+        controller.window.makeFirstResponder(recorder)
+        require(recorder?.onClear?() == true, "card shortcut clear failed")
+        let replacement = controller.displayedBindingRows.first { $0.identifier == retainedID }
+        require(controller.window.firstResponder === replacement?.recorderButton, "card recorder focus lost after reordering")
+        controller.searchField.stringValue = "规模应用 1"
+        controller.rebuildBindingRows()
+        require(!controller.displayedBindingRows.isEmpty && controller.displayedBindingRows.count < bindings.count, "card search failed")
+        controller.searchField.stringValue = ""
+        controller.rebuildBindingRows()
+        require(controller.displayedBindingRows.count == bindings.count, "card search reset lost apps")
+        let suite = "quicktoggle.selftest.layout.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suite) {
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let store = PreferenceStore(defaults: defaults)
+            require(store.applicationLayout == .list, "existing users lost default list")
+            store.applicationLayout = .cards
+            require(PreferenceStore(defaults: defaults).applicationLayout == .cards, "layout preference not persistent")
+        }
+        print(failures.isEmpty ? "Compact layouts passed (list/cards, 560/640/920, focus, search, isolated persistence)"
+              : "Compact layouts FAILED: \(failures.joined(separator: "; "))")
+        return failures.isEmpty
     }
 
     private static func checkThemeSelection() -> Bool {
@@ -6408,6 +6763,16 @@ private enum SelfTest {
                 require(VisualPalette.selectionFill(dark) == VisualPalette.parseColor(variant.selection.fill), "selection fill diverged: \(theme.id)")
             }
         }
+        for source in themes {
+            model.selectTheme(source.id)
+            for destination in themes {
+                model.selectTheme(destination.id)
+                require(ThemeCatalog.selectedID == destination.id, "theme round trip failed")
+                require(VisualPalette.primary(true) == VisualPalette.parseColor(destination.dark.accent.primary), "stale cached theme color")
+                model.selectTheme(source.id)
+            }
+        }
+        model.selectTheme(themes.last?.id ?? "codexu.default")
         model.selectTheme("invalid.theme")
         require(model.themeIdentifier == themes.last?.id, "invalid selection changed the theme")
         ThemeCatalog.select("invalid.theme")
@@ -6421,7 +6786,7 @@ private enum SelfTest {
             preferences.themeIdentifier = "codexu.forbidden-city-red"
             require(PreferenceStore(defaults: defaults).themeIdentifier == "codexu.forbidden-city-red", "theme preference did not persist")
         } else { require(false, "isolated theme preference suite unavailable") }
-        print(failures.isEmpty ? "Theme selection passed (10 themes, light/dark, isolated persistence)"
+        print(failures.isEmpty ? "Theme selection passed (10 themes, 100 pairwise transitions, light/dark, isolated persistence)"
               : "Theme selection FAILED: \(failures.joined(separator: "; "))")
         return failures.isEmpty
     }
@@ -6440,25 +6805,30 @@ private enum SelfTest {
         let directory = URL(fileURLWithPath: raw, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            for theme in ThemeCatalog.bundled {
-                model.selectTheme(theme.id)
-                for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
-                    controller.window.appearance = NSAppearance(named: appearance)
-                    for size in [NSSize(width: 600, height: 500), NSSize(width: 760, height: 690)] {
-                        controller.window.setContentSize(size)
-                        root.layoutSubtreeIfNeeded()
-                        var data: Data?
-                        controller.window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                            guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
-                            root.cacheDisplay(in: root.bounds, to: bitmap)
-                            data = bitmap.representation(using: .png, properties: [:])
+            for layout in [ApplicationLayout.list, .cards] {
+                model.selectApplicationLayout(layout)
+                for theme in ThemeCatalog.bundled {
+                    model.selectTheme(theme.id)
+                    for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                        controller.window.appearance = NSAppearance(named: appearance)
+                        for size in [NSSize(width: 560, height: 500), NSSize(width: 640, height: 620)] {
+                            controller.window.setContentSize(size)
+                            root.layoutSubtreeIfNeeded()
+                            controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: controller.window))
+                            root.layoutSubtreeIfNeeded()
+                            var data: Data?
+                            controller.window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                                guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
+                                root.cacheDisplay(in: root.bounds, to: bitmap)
+                                data = bitmap.representation(using: .png, properties: [:])
+                            }
+                            guard let data else { return false }
+                            try data.write(to: directory.appendingPathComponent("\(theme.id)-\(layout.rawValue)-\(name)-\(Int(size.width)).png"))
                         }
-                        guard let data else { return false }
-                        try data.write(to: directory.appendingPathComponent("\(theme.id)-\(name)-\(Int(size.width)).png"))
                     }
                 }
             }
-            print("Theme gallery rendered: \(ThemeCatalog.bundled.count) themes × 2 appearances × 2 sizes; \(model.bindings.count) read-only app bindings")
+            print("Theme gallery rendered: \(ThemeCatalog.bundled.count) themes × 2 layouts × 2 appearances × 2 sizes; \(model.bindings.count) read-only app bindings")
             return true
         } catch { print("Theme gallery failed: \(error)"); return false }
     }
@@ -6573,6 +6943,22 @@ private enum SelfTest {
         passed = passed && QuickToggleModel.restoredUpdateState(knownTag: "v1.0.0", currentVersion: "1.0.0") == .idle
         passed = passed && QuickToggleModel.restoredUpdateState(knownTag: nil, currentVersion: "1.0.0") == .idle
         passed = passed && QuickToggleModel.restoredUpdateState(knownTag: "v1.0.0-windows-preview.1", currentVersion: "1.0.0") == .idle
+
+        let model = QuickToggleModel(diagnosticMode: true)
+        defer { model.close() }
+        model.completeUpdateCheck(.success(.init(tag: "v999.0.0", notes: "Known release")), userInitiated: false)
+        for result: Result<UpdateCheckService.LatestRelease, UpdateCheckService.Failure> in [
+            .failure(.transport("offline")), .success(.init(tag: "invalid-tag", notes: nil))
+        ] {
+            model.beginUpdateCheck()
+            passed = model.isUpdateCheckInProgress && model.isUpdateAvailable && passed
+            model.completeUpdateCheck(result, userInitiated: true)
+            passed = !model.isUpdateCheckInProgress && model.updateCheckState == .available(latest: "v999.0.0")
+                && model.updateCheckNotes == "Known release" && passed
+        }
+        model.beginUpdateCheck()
+        model.completeUpdateCheck(.success(.init(tag: appVersion, notes: nil)), userInitiated: false)
+        passed = model.updateCheckState == .upToDate && model.updateCheckNotes == nil && passed
 
         let suiteName = "quicktoggle.selftest.updatecheck"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
@@ -7305,6 +7691,20 @@ private enum SelfTest {
         let unsetTexts = texts(in: row(for: unsetID) ?? NSView())
         require(!unsetTexts.contains("待设置") && !unsetTexts.contains("已注册"), "unset row repeats its state")
 
+        // A reused row must reveal a new warning even without a binding change.
+        let cachedHealthyRow = row(for: healthyID)
+        let movedApp = fixtureRoot.appendingPathComponent("TemporarilyMoved.app")
+        do {
+            try FileManager.default.moveItem(at: fixtureApp, to: movedApp)
+            controller.refresh()
+            require(row(for: healthyID) === cachedHealthyRow, "warning refresh unnecessarily rebuilt row")
+            require(cachedHealthyRow?.statusLine?.isHidden == false
+                    && cachedHealthyRow?.statusLine?.stringValue == "找不到目标应用，请重新选择。", "cached row did not reveal new warning")
+            try FileManager.default.moveItem(at: movedApp, to: fixtureApp)
+            controller.refresh()
+            require(cachedHealthyRow?.statusLine?.isHidden == true, "cached row kept cleared warning")
+        } catch { require(false, "warning transition fixture failed: \(error)") }
+
         // Missing target: the second line carries the sanctioned copy.
         let missingTexts = texts(in: row(for: missingID) ?? NSView())
         require(missingTexts.contains("找不到目标应用，请重新选择。"), "missing row lost the re-select line")
@@ -7334,14 +7734,14 @@ private enum SelfTest {
             require(flipped == true, "menu toggle did not flip 未运行时打开")
         }
 
-        // Row density: 60pt rows at 4pt spacing keep interactive controls at
+        // Row density: 52pt rows at 3pt spacing keep interactive controls at
         // least 24pt on both edges.
         for binding in model.bindings {
             guard let row = row(for: binding.id) else {
                 require(false, "row missing for \(binding.target.name)")
                 continue
             }
-            require(abs(row.frame.height - 60) < 1, "row height is not 60pt: \(row.frame.height)")
+            require(abs(row.frame.height - 52) < 1, "row height is not 52pt: \(row.frame.height)")
             if let recorder = row.recorderButton {
                 require(recorder.frame.height >= 24, "recorder below 24pt: \(recorder.frame.height)")
             }
@@ -7733,9 +8133,9 @@ private enum SelfTest {
             let viewTexts = texts(in: controller.window.contentView ?? NSView())
             require(viewTexts.contains("\(scale) 项"), "count label missing at \(scale)")
 
-            // Every built row keeps the 60pt density, including the longest name.
+            // Every built row keeps the 52pt density, including the longest name.
             for row in rows(controller) where texts(in: row).contains(where: { $0.hasPrefix("长长长") }) {
-                require(abs(row.frame.height - 60) < 1, "long-name row height \(row.frame.height) at \(scale)")
+                require(abs(row.frame.height - 52) < 1, "long-name row height \(row.frame.height) at \(scale)")
                 break
             }
 
@@ -9099,7 +9499,7 @@ private enum SelfTest {
         let controller = SettingsController(model: model)
         let failures = controller.interfaceLayoutFailures()
         failures.forEach { print("FAIL: \($0)") }
-        print(failures.isEmpty ? "Interface layout smoke passed (600/760/1080 widths)" : "Interface layout smoke failed")
+        print(failures.isEmpty ? "Interface layout smoke passed (560/640/1080 widths)" : "Interface layout smoke failed")
         let welcomePassed = checkFirstUseWelcomeCard()
         return failures.isEmpty && welcomePassed
     }
