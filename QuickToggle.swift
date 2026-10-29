@@ -5425,6 +5425,8 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             let cardViews = desired
             // Release the old bands before moving cached cards into new bands.
             for band in bindingsStack.arrangedSubviews.compactMap({ $0 as? NSStackView }) {
+                bindingsStack.removeArrangedSubview(band)
+                band.removeFromSuperview()
                 for card in band.arrangedSubviews {
                     band.removeArrangedSubview(card)
                     card.removeFromSuperview()
@@ -5681,7 +5683,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         let switchIndicator = NSImageView()
         switchIndicator.image = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)
         switchIndicator.contentTintColor = .secondaryLabelColor
-        switchIndicator.widthAnchor.constraint(equalToConstant: 12).isActive = true
+        switchIndicator.widthAnchor.constraint(equalToConstant: isCard ? 24 : 12).isActive = true
         switchIndicator.heightAnchor.constraint(equalToConstant: 16).isActive = true
         switchIndicator.setAccessibilityElement(false)
 
@@ -6698,6 +6700,9 @@ private enum SelfTest {
         func textFields(in view: NSView) -> [NSTextField] {
             (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { textFields(in: $0) }
         }
+        func imageViews(in view: NSView) -> [NSImageView] {
+            (view as? NSImageView).map { [$0] } ?? view.subviews.flatMap { imageViews(in: $0) }
+        }
         let model = QuickToggleModel(diagnosticMode: true, previewMode: true, previewBindings: bindings)
         defer { model.close() }
         let controller = SettingsController(model: model)
@@ -6727,6 +6732,13 @@ private enum SelfTest {
                                 .first { $0 !== recorder }
                             require(more.map { abs($0.convert($0.bounds, to: row).midY - recorderFrame.midY) < 1 } == true,
                                     "card actions visually misaligned at \(width)")
+                            if let more, let indicator = imageViews(in: row).max(by: {
+                                $0.convert($0.bounds, to: row).midX < $1.convert($1.bounds, to: row).midX
+                            }) {
+                                require(abs(indicator.convert(indicator.bounds, to: row).midX
+                                            - more.convert(more.bounds, to: row).midX) < 1,
+                                        "more button not aligned below switch indicator at \(width)")
+                            } else { require(false, "card switch indicator missing") }
                             if let name = textFields(in: row).first(where: { $0 !== row.statusLine }) {
                                 let nameFrame = name.convert(name.bounds, to: row)
                                 require(nameFrame.height <= 33 && !nameFrame.intersects(recorderFrame),
