@@ -2,7 +2,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="QuickToggle"
+APP_NAME="AiGoodChange"
+# Keep the executable, bundle ID, and signing identity for existing installations.
+EXECUTABLE_NAME="QuickToggle"
 BUILD_DIR="${QUICKTOGGLE_BUILD_DIR:-$SCRIPT_DIR/build}"
 if [ "${QUICKTOGGLE_PREVIEW:-0}" = "1" ] && [ -z "${QUICKTOGGLE_BUILD_DIR:-}" ]; then
     BUILD_DIR="$SCRIPT_DIR/build/preview"
@@ -15,7 +17,7 @@ RES="$APP/Contents/Resources"
 VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")"
 BUILD_NUMBER="$(git -C "$SCRIPT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
 SOURCE_REVISION="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-if [ "$SOURCE_REVISION" != "unknown" ] && ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- QuickToggle.swift VERSION build.sh; then
+if [ "$SOURCE_REVISION" != "unknown" ] && ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- QuickToggle.swift VERSION build.sh Assets; then
     SOURCE_REVISION="$SOURCE_REVISION-dirty"
 fi
 
@@ -40,31 +42,31 @@ case "$CONFIG" in
 esac
 
 BUNDLE_ID="com.quicktoggle.app"
-DISPLAY_NAME="轻唤"
+DISPLAY_NAME="AiGoodChange"
 if [ "${QUICKTOGGLE_PREVIEW:-0}" = "1" ]; then
     SWIFT_FLAGS+=(-D QUICKTOGGLE_PREVIEW)
     BUNDLE_ID="com.quicktoggle.preview"
-    DISPLAY_NAME="轻唤预览"
+    DISPLAY_NAME="AiGoodChange 预览"
 fi
 
 echo "→ 编译中（$CONFIG，版本 $VERSION build $BUILD_NUMBER）..."
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" \
 SWIFT_MODULECACHE_PATH="$MODULE_CACHE_DIR" \
 /usr/bin/swiftc "$SCRIPT_DIR/QuickToggle.swift" "${SWIFT_FLAGS[@]}" \
-  -o "$BIN/$APP_NAME"
+  -o "$BIN/$EXECUTABLE_NAME"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>QuickToggle</string>
+  <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${DISPLAY_NAME}</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>QuickToggleSourceRevision</key><string>${SOURCE_REVISION}</string>
-  <key>CFBundleGetInfoString</key><string>QuickToggle（轻唤）${VERSION}</string>
+  <key>CFBundleGetInfoString</key><string>AiGoodChange ${VERSION}</string>
   <key>CFBundleExecutable</key><string>QuickToggle</string>
   <key>CFBundleIconFile</key><string>QuickToggleIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -75,6 +77,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 cp "$SCRIPT_DIR/Assets/QuickToggleIcon-0817v2.icns" "$RES/QuickToggleIcon.icns"
+cp "$SCRIPT_DIR/Assets/AiGoodBroThemes.json" "$RES/AiGoodBroThemes.json"
+cp "$SCRIPT_DIR/Assets/AiGoodBro-Themes-LICENSE.txt" "$RES/AiGoodBro-Themes-LICENSE.txt"
 
 SIGN_IDENTITY="QuickToggle Local Development"
 if /usr/bin/security find-certificate -c "$SIGN_IDENTITY" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then

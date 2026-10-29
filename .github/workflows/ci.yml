@@ -1,4 +1,4 @@
-name: QuickToggle CI
+name: AiGoodChange CI
 
 on:
   pull_request:
@@ -43,15 +43,15 @@ jobs:
           import zipfile
 
           version = Path("VERSION").read_text().strip()
-          archive = Path("build/package") / f"QuickToggle-{version}-macOS-arm64.zip"
+          archive = Path("build/package") / f"AiGoodChange-{version}-macOS-arm64.zip"
           with zipfile.ZipFile(archive) as package:
               assert package.testzip() is None, "Damaged archive"
-              info = plistlib.loads(package.read("QuickToggle.app/Contents/Info.plist"))
+              info = plistlib.loads(package.read("AiGoodChange.app/Contents/Info.plist"))
               assert info["CFBundleShortVersionString"] == version
               assert info["CFBundleIdentifier"] == "com.quicktoggle.app"
               revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
               assert info["QuickToggleSourceRevision"] == revision
-          print(f"Verified QuickToggle {version} release archive")
+          print(f"Verified AiGoodChange {version} release archive")
           PY
 
   windows:
