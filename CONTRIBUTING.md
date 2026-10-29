@@ -20,7 +20,7 @@ bash package.sh
 git diff --check
 ```
 
-`selfcheck.sh` 默认在 `build/checks/` 构建，`package.sh` 默认在 `build/package/` 构建。需要自定义路径时设置 `QUICKTOGGLE_BUILD_DIR`。日常运行的 `build/QuickToggle.app` 保持独立；更换安装包前正常退出对应实例。
+`selfcheck.sh` 默认在 `build/checks/` 构建，`package.sh` 默认在 `build/package/` 构建。需要自定义路径时设置 `QUICKTOGGLE_BUILD_DIR`。日常运行的 `build/AiGoodChange.app` 保持独立；更换安装包前正常退出对应实例。
 
 CI 使用 Apple Silicon macOS runner，执行源码检查、构建、签名、自检、布局检查和发行 ZIP 元数据检查。CI 不替代真实全局按键、休眠、重新登录和辅助功能操作的验证；涉及这些行为时在 PR 中明确记录。
 
