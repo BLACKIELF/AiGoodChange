@@ -5385,13 +5385,13 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
                         rowView = cached.row
                         if columnsChanged {
                             cached.widthConstraint.isActive = false
-                            widthConstraint = bindingWidthConstraint(for: rowView, columns: columns)
+                            widthConstraint = bindingWidthConstraint(for: rowView)
                         } else {
                             widthConstraint = cached.widthConstraint
                         }
                     } else {
                         rowView = makeBindingRow(binding)
-                        widthConstraint = bindingWidthConstraint(for: rowView, columns: columns)
+                        widthConstraint = bindingWidthConstraint(for: rowView)
                     }
                     nextCache[binding.id] = (rowView, binding, widthConstraint)
                     desired.append(rowView)
@@ -5406,7 +5406,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             if let binding = model.bindings.first(where: { $0.id == id }), binding == entry.binding {
                 if columnsChanged {
                     entry.widthConstraint.isActive = false
-                    nextCache[id] = (entry.row, entry.binding, bindingWidthConstraint(for: entry.row, columns: columns))
+                    nextCache[id] = (entry.row, entry.binding, bindingWidthConstraint(for: entry.row))
                 } else {
                     nextCache[id] = entry
                 }
@@ -5435,10 +5435,9 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             desired = stride(from: 0, to: cardViews.count, by: columns).map { start in
                 let band = horizontalStack(Array(cardViews[start..<min(start + columns, cardViews.count)]), spacing: 8)
                 band.alignment = .top
-                if start + columns > cardViews.count {
-                    let trailing = NSView()
-                    trailing.setContentHuggingPriority(.init(1), for: .horizontal)
-                    band.addArrangedSubview(trailing)
+                band.distribution = .fillEqually
+                while band.arrangedSubviews.count < columns {
+                    band.addArrangedSubview(NSView())
                 }
                 freshViews.append(band)
                 return band
@@ -5475,7 +5474,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
             view.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor).isActive = true
         }
         bottomSpacerWidth.isActive = true
-        for entry in bindingRowCache.values where entry.row.window != nil {
+        for entry in bindingRowCache.values where !showCards && entry.row.window != nil {
             entry.widthConstraint.isActive = true
         }
         let restoredRow = restoreBindingFocus(focusAnchor)
@@ -5488,9 +5487,10 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
     // Auto Layout adjusts their widths, including before the clip view is laid out.
     private let cardColumnCount = 3
 
-    private func bindingWidthConstraint(for row: NSView, columns: Int) -> NSLayoutConstraint {
-        row.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor, multiplier: 1 / CGFloat(columns),
-                                   constant: -8 * CGFloat(columns - 1) / CGFloat(columns))
+    private func bindingWidthConstraint(for row: NSView) -> NSLayoutConstraint {
+        // List rows fill the viewport. Card widths belong to their native equal-
+        // width band, avoiding redundant fractional constraints across ancestors.
+        row.widthAnchor.constraint(equalTo: bindingsStack.widthAnchor)
     }
 
     @objc fileprivate func changeLayout(_ sender: NSSegmentedControl) {
