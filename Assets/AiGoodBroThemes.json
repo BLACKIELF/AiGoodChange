@@ -1,0 +1,442 @@
+[
+  {
+    "id": "codexu.default",
+    "name": "默认",
+    "light": {
+      "accent": {
+        "primary": "#2866F7",
+        "primaryStrong": "#1F59ED",
+        "primaryLight": "#7BA0FF",
+        "secondary": "#8B6DFF",
+        "secondaryStrong": "#6D45E8",
+        "highlight": "#DAA3FA"
+      },
+      "selection": {
+        "foreground": "#2866F7",
+        "fill": "#2866F71F",
+        "stroke": "#2866F757",
+        "focusRing": "#2866F7A6"
+      },
+      "surfaceTint": {
+        "color": "#2866F7",
+        "maximumOpacity": 0.08
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#2866F7",
+        "primaryStrong": "#1F59ED",
+        "primaryLight": "#7BA0FF",
+        "secondary": "#8B6DFF",
+        "secondaryStrong": "#6D45E8",
+        "highlight": "#DAA3FA"
+      },
+      "selection": {
+        "foreground": "#2866F7",
+        "fill": "#2866F71F",
+        "stroke": "#2866F757",
+        "focusRing": "#2866F7A6"
+      },
+      "surfaceTint": {
+        "color": "#2866F7",
+        "maximumOpacity": 0.08
+      }
+    }
+  },
+  {
+    "id": "codexu.github-primer",
+    "name": "GitHub 极客",
+    "light": {
+      "accent": {
+        "primary": "#0969DA",
+        "primaryStrong": "#0550AE",
+        "primaryLight": "#54AEFF",
+        "secondary": "#8250DF",
+        "secondaryStrong": "#6639BA",
+        "highlight": "#B6E3FF"
+      },
+      "selection": {
+        "foreground": "#0969DA",
+        "fill": "#0969DA1F",
+        "stroke": "#0969DA57",
+        "focusRing": "#0969DAA6"
+      },
+      "surfaceTint": {
+        "color": "#0969DA",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#4493F8",
+        "primaryStrong": "#1F6FEB",
+        "primaryLight": "#79C0FF",
+        "secondary": "#AB7DF8",
+        "secondaryStrong": "#8957E5",
+        "highlight": "#388BFD66"
+      },
+      "selection": {
+        "foreground": "#4493F8",
+        "fill": "#4493F833",
+        "stroke": "#4493F866",
+        "focusRing": "#4493F8A6"
+      },
+      "surfaceTint": {
+        "color": "#4493F8",
+        "maximumOpacity": 0.08
+      }
+    }
+  },
+  {
+    "id": "codexu.waicy",
+    "name": "WAICY 流彩",
+    "light": {
+      "accent": {
+        "primary": "#B5235C",
+        "primaryStrong": "#961944",
+        "primaryLight": "#FF7CA0",
+        "secondary": "#A4470B",
+        "secondaryStrong": "#873900",
+        "highlight": "#FE478A"
+      },
+      "selection": {
+        "foreground": "#B5235C",
+        "fill": "#B5235C1F",
+        "stroke": "#B5235C57",
+        "focusRing": "#B5235CA6"
+      },
+      "surfaceTint": {
+        "color": "#FE478A",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#FF7CA0",
+        "primaryStrong": "#FE478A",
+        "primaryLight": "#FFACBF",
+        "secondary": "#FFA74D",
+        "secondaryStrong": "#E68535",
+        "highlight": "#FFBD91"
+      },
+      "selection": {
+        "foreground": "#FFACBF",
+        "fill": "#FF7CA029",
+        "stroke": "#FF7CA070",
+        "focusRing": "#FFACBFC2"
+      },
+      "surfaceTint": {
+        "color": "#FE478A",
+        "maximumOpacity": 0.06
+      }
+    }
+  },
+  {
+    "id": "codexu.thousand-li-landscape",
+    "name": "千里江山",
+    "light": {
+      "accent": {
+        "primary": "#1F5F83",
+        "primaryStrong": "#164562",
+        "primaryLight": "#4D8CAF",
+        "secondary": "#3E7B5D",
+        "secondaryStrong": "#2D6047",
+        "highlight": "#B08A38"
+      },
+      "selection": {
+        "foreground": "#1F5F83",
+        "fill": "#1F5F831F",
+        "stroke": "#1F5F8357",
+        "focusRing": "#1F5F83A6"
+      },
+      "surfaceTint": {
+        "color": "#3E7B5D",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#65A9CF",
+        "primaryStrong": "#4B8FB7",
+        "primaryLight": "#91C5DE",
+        "secondary": "#78B98E",
+        "secondaryStrong": "#5A9A70",
+        "highlight": "#D7B85F"
+      },
+      "selection": {
+        "foreground": "#91C5DE",
+        "fill": "#65A9CF29",
+        "stroke": "#65A9CF70",
+        "focusRing": "#91C5DEC2"
+      },
+      "surfaceTint": {
+        "color": "#78B98E",
+        "maximumOpacity": 0.05
+      }
+    }
+  },
+  {
+    "id": "codexu.forbidden-city-red",
+    "name": "故宫红墙",
+    "light": {
+      "accent": {
+        "primary": "#982F28",
+        "primaryStrong": "#74231F",
+        "primaryLight": "#C65342",
+        "secondary": "#B07A24",
+        "secondaryStrong": "#815719",
+        "highlight": "#3F464B"
+      },
+      "selection": {
+        "foreground": "#982F28",
+        "fill": "#982F281F",
+        "stroke": "#982F2857",
+        "focusRing": "#982F28A6"
+      },
+      "surfaceTint": {
+        "color": "#982F28",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#D97663",
+        "primaryStrong": "#C95F4F",
+        "primaryLight": "#E5A06F",
+        "secondary": "#E1B85F",
+        "secondaryStrong": "#B98C38",
+        "highlight": "#AAB1B5"
+      },
+      "selection": {
+        "foreground": "#E5A06F",
+        "fill": "#D9766329",
+        "stroke": "#D9766370",
+        "focusRing": "#E5A06FC2"
+      },
+      "surfaceTint": {
+        "color": "#D97663",
+        "maximumOpacity": 0.05
+      }
+    }
+  },
+  {
+    "id": "codexu.dunhuang-apsara",
+    "name": "敦煌飞天",
+    "light": {
+      "accent": {
+        "primary": "#2D6C6C",
+        "primaryStrong": "#1E5353",
+        "primaryLight": "#579394",
+        "secondary": "#944737",
+        "secondaryStrong": "#733428",
+        "highlight": "#B98738"
+      },
+      "selection": {
+        "foreground": "#2D6C6C",
+        "fill": "#2D6C6C1F",
+        "stroke": "#2D6C6C57",
+        "focusRing": "#2D6C6CA6"
+      },
+      "surfaceTint": {
+        "color": "#2D6C6C",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#6CB4AE",
+        "primaryStrong": "#4E9995",
+        "primaryLight": "#9BCFC9",
+        "secondary": "#D3836D",
+        "secondaryStrong": "#B76555",
+        "highlight": "#DDBB61"
+      },
+      "selection": {
+        "foreground": "#9BCFC9",
+        "fill": "#6CB4AE29",
+        "stroke": "#6CB4AE70",
+        "focusRing": "#9BCFC9C2"
+      },
+      "surfaceTint": {
+        "color": "#6CB4AE",
+        "maximumOpacity": 0.05
+      }
+    }
+  },
+  {
+    "id": "codexu.liquid-keycap",
+    "name": "液态键帽",
+    "light": {
+      "accent": {
+        "primary": "#2F7DE5",
+        "primaryStrong": "#1558BD",
+        "primaryLight": "#79B8FF",
+        "secondary": "#F3BD12",
+        "secondaryStrong": "#D99B00",
+        "highlight": "#2DA74C"
+      },
+      "selection": {
+        "foreground": "#1558BD",
+        "fill": "#2F7DE51F",
+        "stroke": "#2F7DE55C",
+        "focusRing": "#2F7DE5A6"
+      },
+      "surfaceTint": {
+        "color": "#D9E6EA",
+        "maximumOpacity": 0.12
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#4E9AFF",
+        "primaryStrong": "#2475DB",
+        "primaryLight": "#8CC5FF",
+        "secondary": "#FFD24A",
+        "secondaryStrong": "#E8AD12",
+        "highlight": "#42C963"
+      },
+      "selection": {
+        "foreground": "#8CC5FF",
+        "fill": "#4E9AFF24",
+        "stroke": "#4E9AFF66",
+        "focusRing": "#4E9AFFB3"
+      },
+      "surfaceTint": {
+        "color": "#C8D5D9",
+        "maximumOpacity": 0.1
+      }
+    }
+  },
+  {
+    "id": "codexu.violet-glow",
+    "name": "紫蓝流光",
+    "light": {
+      "accent": {
+        "primary": "#2866F7",
+        "primaryStrong": "#1F59ED",
+        "primaryLight": "#7BA0FF",
+        "secondary": "#8B6DFF",
+        "secondaryStrong": "#6D45E8",
+        "highlight": "#DAA3FA"
+      },
+      "selection": {
+        "foreground": "#2866F7",
+        "fill": "#2866F71F",
+        "stroke": "#2866F757",
+        "focusRing": "#2866F7A6"
+      },
+      "surfaceTint": {
+        "color": "#2866F7",
+        "maximumOpacity": 0.08
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#2866F7",
+        "primaryStrong": "#1F59ED",
+        "primaryLight": "#7BA0FF",
+        "secondary": "#8B6DFF",
+        "secondaryStrong": "#6D45E8",
+        "highlight": "#DAA3FA"
+      },
+      "selection": {
+        "foreground": "#2866F7",
+        "fill": "#2866F71F",
+        "stroke": "#2866F757",
+        "focusRing": "#2866F7A6"
+      },
+      "surfaceTint": {
+        "color": "#2866F7",
+        "maximumOpacity": 0.08
+      }
+    }
+  },
+  {
+    "id": "codexu.orchid-dawn",
+    "name": "蒙特雷曙霞",
+    "light": {
+      "accent": {
+        "primary": "#6A4BB1",
+        "primaryStrong": "#50368D",
+        "primaryLight": "#9276CE",
+        "secondary": "#B7498B",
+        "secondaryStrong": "#91366D",
+        "highlight": "#D87755"
+      },
+      "selection": {
+        "foreground": "#6A4BB1",
+        "fill": "#6A4BB11F",
+        "stroke": "#6A4BB157",
+        "focusRing": "#6A4BB1A6"
+      },
+      "surfaceTint": {
+        "color": "#6A4BB1",
+        "maximumOpacity": 0.06
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#B79AF4",
+        "primaryStrong": "#9877DE",
+        "primaryLight": "#D0BCFA",
+        "secondary": "#EF82BD",
+        "secondaryStrong": "#D260A1",
+        "highlight": "#E9A071"
+      },
+      "selection": {
+        "foreground": "#D0BCFA",
+        "fill": "#B79AF429",
+        "stroke": "#B79AF470",
+        "focusRing": "#D0BCFAC2"
+      },
+      "surfaceTint": {
+        "color": "#B79AF4",
+        "maximumOpacity": 0.05
+      }
+    }
+  },
+  {
+    "id": "codexu.blue-white-porcelain",
+    "name": "青花瓷",
+    "light": {
+      "accent": {
+        "primary": "#164F86",
+        "primaryStrong": "#082F59",
+        "primaryLight": "#4E86B5",
+        "secondary": "#4F7774",
+        "secondaryStrong": "#365E5D",
+        "highlight": "#8A6A43"
+      },
+      "selection": {
+        "foreground": "#164F86",
+        "fill": "#164F861F",
+        "stroke": "#164F8657",
+        "focusRing": "#164F86A6"
+      },
+      "surfaceTint": {
+        "color": "#F4F8FA",
+        "maximumOpacity": 0.08
+      }
+    },
+    "dark": {
+      "accent": {
+        "primary": "#69A4D1",
+        "primaryStrong": "#A7CBE4",
+        "primaryLight": "#8AB9D9",
+        "secondary": "#86AAA3",
+        "secondaryStrong": "#B4CEC7",
+        "highlight": "#D2B27B"
+      },
+      "selection": {
+        "foreground": "#A7CBE4",
+        "fill": "#69A4D129",
+        "stroke": "#69A4D170",
+        "focusRing": "#A7CBE4C2"
+      },
+      "surfaceTint": {
+        "color": "#E7F0F4",
+        "maximumOpacity": 0.06
+      }
+    }
+  }
+]
