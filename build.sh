@@ -16,8 +16,15 @@ RES="$APP/Contents/Resources"
 
 VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")"
 BUILD_NUMBER="$(git -C "$SCRIPT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
+if [ -f "$SCRIPT_DIR/BUILD_NUMBER" ]; then
+    BUILD_NUMBER="$(tr -d '[:space:]' < "$SCRIPT_DIR/BUILD_NUMBER")"
+fi
+if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    echo "BUILD_NUMBER 必须是正整数。" >&2
+    exit 2
+fi
 SOURCE_REVISION="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-if [ "$SOURCE_REVISION" != "unknown" ] && ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- QuickToggle.swift VERSION build.sh Assets; then
+if [ "$SOURCE_REVISION" != "unknown" ] && ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- QuickToggle.swift VERSION BUILD_NUMBER build.sh Assets; then
     SOURCE_REVISION="$SOURCE_REVISION-dirty"
 fi
 
@@ -76,9 +83,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cp "$SCRIPT_DIR/Assets/QuickToggleIcon-0817v2.icns" "$RES/QuickToggleIcon.icns"
+cp "$SCRIPT_DIR/Assets/GoodChange-icon-1030v1.icns" "$RES/QuickToggleIcon.icns"
 cp "$SCRIPT_DIR/Assets/AiGoodBroThemes.json" "$RES/AiGoodBroThemes.json"
 cp "$SCRIPT_DIR/Assets/AiGoodBro-Themes-LICENSE.txt" "$RES/AiGoodBro-Themes-LICENSE.txt"
+cp "$SCRIPT_DIR/Assets/WeComFirstLaunch.jpg" "$RES/WeComFirstLaunch.jpg"
 
 SIGN_IDENTITY="QuickToggle Local Development"
 if /usr/bin/security find-certificate -c "$SIGN_IDENTITY" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then

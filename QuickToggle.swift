@@ -24,7 +24,7 @@ private struct AppBinding: Codable, Equatable {
 }
 
 private func shortcutIsUsed(_ shortcut: Shortcut, in bindings: [AppBinding], excluding id: UUID) -> Bool {
-    bindings.contains { $0.id != id && $0.shortcut == shortcut }
+    bindings.contains { $0.id != id && $0.shortcut?.matchesKey(shortcut) == true }
 }
 
 private let fnModifierMask = UInt32(NSEvent.ModifierFlags.function.rawValue)
@@ -92,6 +92,10 @@ private struct Shortcut: Codable, Equatable {
     let keyCode: UInt32
     let modifiers: UInt32
     let label: String
+
+    func matchesKey(_ other: Shortcut) -> Bool {
+        keyCode == other.keyCode && modifiers == other.modifiers
+    }
 
     var displayName: String {
         var result = ""
@@ -232,6 +236,10 @@ private struct Shortcut: Codable, Equatable {
     }
 
     private static let keyLabels: [UInt32: String] = [
+        UInt32(kVK_ANSI_0): "0", UInt32(kVK_ANSI_1): "1", UInt32(kVK_ANSI_2): "2",
+        UInt32(kVK_ANSI_3): "3", UInt32(kVK_ANSI_4): "4", UInt32(kVK_ANSI_5): "5",
+        UInt32(kVK_ANSI_6): "6", UInt32(kVK_ANSI_7): "7", UInt32(kVK_ANSI_8): "8",
+        UInt32(kVK_ANSI_9): "9",
         UInt32(kVK_LeftArrow): "←", UInt32(kVK_RightArrow): "→",
         UInt32(kVK_UpArrow): "↑", UInt32(kVK_DownArrow): "↓",
         UInt32(kVK_F1): "F1", UInt32(kVK_F2): "F2", UInt32(kVK_F3): "F3",
@@ -1010,14 +1018,14 @@ private enum OccupiedHotKeys {
 
     static func summary(of entries: [OccupiedHotKeyEntry]) -> String {
         guard !entries.isEmpty else {
-            return "本机已占用：暂无记录。把其他软件占用的组合加进来，AiGoodChange 录制时会自动避开。"
+            return "本机已占用：暂无记录。把其他软件占用的组合加进来，手动录制时仍可保存，冲突项会提示。"
         }
         let body = entries.map { "\($0.name) \($0.shortcut.displayName)" }.joined(separator: "，")
-        return "本机已占用：\(body)。不要再录进 AiGoodChange。"
+        return "本机已占用：\(body)。冲突组合可保存，解除占用后才能生效。"
     }
 
     static func owner(of shortcut: Shortcut, in entries: [OccupiedHotKeyEntry]) -> String? {
-        entries.first { $0.shortcut == shortcut }?.name
+        entries.first { $0.shortcut.matchesKey(shortcut) }?.name
     }
 }
 
@@ -1880,9 +1888,20 @@ private final class FunctionHotKeyCenter {
     private var runLoopSource: CFRunLoopSource?
     private var entries: [UUID: Entry] = [:]
     private var pressedTokensByKeyCode: [UInt32: Set<UUID>] = [:]
+    private var recordingKeyCodes: Set<UInt32> = []
     private(set) var state: FunctionEventTapState = .idle
 
     var activeRegistrationCount: Int { entries.count }
+
+    func beginShortcutRecording() {
+        // Recording a regular shortcut must not prompt for accessibility permission.
+        guard eventTap != nil || Accessibility.isTrusted else { return }
+        _ = ensureTap(requestPermission: false)
+    }
+
+    func endShortcutRecording() {
+        stopTapIfUnused()
+    }
 
     static func hasExactFunctionModifier(_ flags: CGEventFlags) -> Bool {
         guard flags.contains(.maskSecondaryFn) else { return false }
@@ -1896,7 +1915,7 @@ private final class FunctionHotKeyCenter {
         onKeyUp: @escaping () -> Void
     ) -> Result<UUID, HotKeyFailure> {
         guard shortcut.isFunctionDigit else { return .failure(.failed) }
-        if entries.values.contains(where: { $0.shortcut == shortcut }) {
+        if entries.values.contains(where: { $0.shortcut.matchesKey(shortcut) }) {
             return .failure(.occupied)
         }
         switch ensureTap(requestPermission: true) {
@@ -1910,11 +1929,11 @@ private final class FunctionHotKeyCenter {
 
     func probe(_ shortcut: Shortcut) -> Result<Void, HotKeyFailure> {
         guard shortcut.isFunctionDigit else { return .failure(.failed) }
-        if entries.values.contains(where: { $0.shortcut == shortcut }) {
+        if entries.values.contains(where: { $0.shortcut.matchesKey(shortcut) }) {
             return .failure(.occupied)
         }
         let result = ensureTap(requestPermission: true)
-        if entries.isEmpty, case .success = result { stopTap(nextState: .idle) }
+        if case .success = result { stopTapIfUnused() }
         return result
     }
 
@@ -1926,7 +1945,7 @@ private final class FunctionHotKeyCenter {
                 pressedTokensByKeyCode.removeValue(forKey: keyCode)
             }
         }
-        if entries.isEmpty { stopTap(nextState: .idle) }
+        stopTapIfUnused()
         return .success(())
     }
 
@@ -1956,19 +1975,26 @@ private final class FunctionHotKeyCenter {
     func handle(type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             releaseAllPressedKeys()
+            recordingKeyCodes.removeAll()
             state = .disabled
             if let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
                 state = CGEvent.tapIsEnabled(tap: eventTap) ? .active : .disabled
             }
+            DispatchQueue.main.async { [weak self] in self?.stopTapIfUnused() }
             return false
         }
 
         let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
         switch type {
         case .keyDown:
+            if recordingKeyCodes.contains(keyCode) { return true }
             if let tokens = pressedTokensByKeyCode[keyCode], !tokens.isEmpty {
                 for token in tokens { entries[token]?.onKeyDown() }
+                return true
+            }
+            if ShortcutRecorderButton.captureBeforeGlobalDispatch(event) {
+                recordingKeyCodes.insert(keyCode)
                 return true
             }
             guard Self.hasExactFunctionModifier(event.flags) else { return false }
@@ -1980,6 +2006,10 @@ private final class FunctionHotKeyCenter {
             }
             return true
         case .keyUp:
+            if recordingKeyCodes.remove(keyCode) != nil {
+                DispatchQueue.main.async { [weak self] in self?.stopTapIfUnused() }
+                return true
+            }
             guard let tokens = pressedTokensByKeyCode.removeValue(forKey: keyCode), !tokens.isEmpty else {
                 return false
             }
@@ -2033,8 +2063,15 @@ private final class FunctionHotKeyCenter {
         for token in tokens { entries[token]?.onKeyUp() }
     }
 
+    private func stopTapIfUnused() {
+        guard entries.isEmpty, recordingKeyCodes.isEmpty,
+              !ShortcutRecorderButton.hasFocusedRecorder, eventTap != nil else { return }
+        stopTap(nextState: .idle)
+    }
+
     private func stopTap(nextState: FunctionEventTapState) {
         releaseAllPressedKeys()
+        recordingKeyCodes.removeAll()
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
@@ -2191,7 +2228,10 @@ private final class HotKeyManager {
         }
         switch GetEventKind(event) {
         case UInt32(kEventHotKeyPressed):
-            guard pressState.acceptPress() else { return noErr }
+            guard generationState.isActive, pressState.acceptPress() else { return noErr }
+            if let activeShortcut, ShortcutRecorderButton.captureRegisteredShortcut(activeShortcut) {
+                return noErr
+            }
             let generation = generationState.generation
             DispatchQueue.main.async { [weak self] in self?.deliverPress(generation: generation) }
             return noErr
@@ -2205,7 +2245,7 @@ private final class HotKeyManager {
 
     func replace(with shortcut: Shortcut) -> Result<Void, HotKeyFailure> {
         guard shortcut.isFunctionDigit || handler != nil else { return .failure(.failed) }
-        if activeShortcut == shortcut, reference != nil { return .success(()) }
+        if activeShortcut?.matchesKey(shortcut) == true, reference != nil { return .success(()) }
 
         let candidateGeneration = generationState.nextGeneration
 
@@ -2316,6 +2356,9 @@ private final class HotKeyManager {
 
     private func handleFunctionKeyDown(generation: UInt64) {
         guard generationState.accepts(generation), pressState.acceptPress() else { return }
+        if let activeShortcut, ShortcutRecorderButton.captureRegisteredShortcut(activeShortcut) {
+            return
+        }
         DispatchQueue.main.async { [weak self] in self?.deliverPress(generation: generation) }
     }
 
@@ -3078,6 +3121,7 @@ private final class QuickToggleModel {
     private var hotKeys: [UUID: HotKeyManager] = [:]
     private var engines: [UUID: ToggleEngine] = [:]
     private let settingsHotKey = HotKeyManager()
+    private var conflictingBindings = Set<UUID>()
     private static let defaultSettingsShortcut = Shortcut(
         keyCode: UInt32(kVK_ANSI_3),
         modifiers: UInt32(cmdKey),
@@ -3166,6 +3210,7 @@ private final class QuickToggleModel {
     var registeredShortcutCount: Int { hotKeys.values.filter(\.isActive).count }
     func shortcutState(for binding: AppBinding) -> (text: String, color: NSColor) {
         guard binding.shortcut != nil else { return ("待设置", .secondaryLabelColor) }
+        if conflictingBindings.contains(binding.id) { return ("冲突 · 已保存，未生效", .systemOrange) }
         if previewMode { return ("预览", .secondaryLabelColor) }
         guard isEnabled else { return ("已暂停", .secondaryLabelColor) }
         return hotKeys[binding.id]?.isActive == true
@@ -3334,9 +3379,13 @@ private final class QuickToggleModel {
         )
     }
 
-    func applyShortcut(_ candidate: Shortcut, for bindingID: UUID) -> Bool {
+    func applyShortcut(_ candidate: Shortcut, for bindingID: UUID, saveOnConflict: Bool = false) -> Bool {
         guard let index = bindings.firstIndex(where: { $0.id == bindingID }) else { return false }
         let binding = bindings[index]
+        if binding.shortcut?.matchesKey(candidate) == true, hotKeys[bindingID]?.isActive == true {
+            reportStatus("\(candidate.displayName) 已保存并生效。")
+            return true
+        }
         let preservedShortcut = binding.shortcut == nil
             ? "请改用其他组合。"
             : "原快捷键仍然有效。"
@@ -3357,16 +3406,18 @@ private final class QuickToggleModel {
             reportStatus("已探测：找不到 \(name)。未改键。", tone: .error)
             return false
         case .usedByQuickToggle:
-            reportStatus("已探测：该组合已用于 AiGoodChange 其他应用。\(preservedShortcut)", tone: .warning)
-            return false
+            let owner = bindings.first { $0.id != bindingID && $0.shortcut?.matchesKey(candidate) == true }
+            return handleShortcutConflict(candidate, at: index, reason: owner?.target.name ?? "其他应用", save: saveOnConflict)
         case .occupiedLocally(let owner):
-            reportStatus("已探测：占用（\(owner)）。\(preservedShortcut)", tone: .warning)
-            return false
+            return handleShortcutConflict(candidate, at: index, reason: owner, save: saveOnConflict)
         case .ready:
-            break
+            if settingsShortcut.matchesKey(candidate) {
+                return handleShortcutConflict(candidate, at: index, reason: "打开 AiGoodChange 窗口", save: saveOnConflict)
+            }
         }
 
         if previewMode {
+            conflictingBindings.remove(bindingID)
             bindings[index].shortcut = candidate
             reportStatus("预览：\(binding.target.name) → \(candidate.displayName)，没有注册或保存到当前配置。")
             return true
@@ -3375,8 +3426,7 @@ private final class QuickToggleModel {
         let result = isEnabled ? manager.replace(with: candidate) : manager.probe(candidate)
         switch result {
         case .failure(.occupied):
-            reportStatus("已探测：系统占用。\(preservedShortcut)", tone: .warning)
-            return false
+            return handleShortcutConflict(candidate, at: index, reason: "系统或其他软件", save: saveOnConflict)
         case .failure(.permissionDenied):
             reportStatus("fn/🌐 热键需要“辅助功能”授权；完成授权后请重新录制。\(preservedShortcut)", tone: .error)
             return false
@@ -3390,7 +3440,9 @@ private final class QuickToggleModel {
             return false
         case .success:
             bindings[index].shortcut = candidate
+            conflictingBindings.remove(bindingID)
             saveBindings()
+            retryConflictingBindings()
             if let warning = shortcutWarning(for: candidate) {
                 reportStatus("已探测：空闲。\(warning)", tone: .warning)
             } else {
@@ -3402,6 +3454,33 @@ private final class QuickToggleModel {
             }
             return true
         }
+    }
+
+    private func handleShortcutConflict(_ candidate: Shortcut, at index: Int, reason: String, save: Bool) -> Bool {
+        let binding = bindings[index]
+        guard save else {
+            reportStatus("\(candidate.displayName) 与 \(reason) 冲突。", tone: .warning)
+            return false
+        }
+        if let manager = hotKeys[binding.id], manager.isActive, case .failure = manager.disable() {
+            reportStatus("系统无法停用旧快捷键，未能保存新组合。", tone: .error)
+            return false
+        }
+        // Registration after a restart follows saved order. Keep the incumbent ahead of the new request;
+        // the UI sorts independently by shortcut and app name.
+        var updated = bindings.remove(at: index)
+        updated.shortcut = candidate
+        bindings.append(updated)
+        conflictingBindings.insert(updated.id)
+        saveBindings()
+        retryConflictingBindings()
+        reportStatus("已保存 \(candidate.displayName)，与 \(reason) 冲突，暂未生效。", tone: .warning)
+        return true
+    }
+
+    private func retryConflictingBindings() {
+        guard isEnabled, !previewMode, !conflictingBindings.isEmpty else { return }
+        _ = registerAll()
     }
 
     func applySettingsShortcut(_ candidate: Shortcut) -> Bool {
@@ -3451,6 +3530,7 @@ private final class QuickToggleModel {
         case .success:
             settingsShortcut = candidate
             preferences?.settingsShortcut = candidate
+            retryConflictingBindings()
             if let warning = candidate.riskWarning {
                 reportStatus("已探测：空闲。\(warning)", tone: .warning)
             } else {
@@ -3467,7 +3547,9 @@ private final class QuickToggleModel {
             return false
         }
         bindings[index].shortcut = nil
+        conflictingBindings.remove(bindingID)
         saveBindings()
+        retryConflictingBindings()
         reportStatus("已清除 \(bindings[index].target.name) 的快捷键。")
         return true
     }
@@ -3498,7 +3580,9 @@ private final class QuickToggleModel {
         hotKeys.removeValue(forKey: bindingID)?.close()
         engines.removeValue(forKey: bindingID)?.cancelSession()
         bindings.remove(at: index)
+        conflictingBindings.remove(bindingID)
         saveBindings()
+        retryConflictingBindings()
         reportStatus("已移除 \(name)。")
     }
 
@@ -3662,7 +3746,7 @@ private final class QuickToggleModel {
         }
         occupiedHotKeys.append(OccupiedHotKeyEntry(name: trimmed, shortcut: shortcut))
         preferences.saveOccupiedHotKeys(occupiedHotKeys)
-        reportStatus("已记录本机占用：\(trimmed) \(shortcut.displayName)。录制时会避开它。")
+        reportStatus("已记录本机占用：\(trimmed) \(shortcut.displayName)。手动录制冲突组合时会提示。")
         return true
     }
 
@@ -3670,6 +3754,7 @@ private final class QuickToggleModel {
         guard let preferences else { return }
         occupiedHotKeys.removeAll { $0 == entry }
         preferences.saveOccupiedHotKeys(occupiedHotKeys)
+        retryConflictingBindings()
         reportStatus("已移除占用记录：\(entry.name) \(entry.shortcut.displayName)。")
     }
 
@@ -3700,6 +3785,7 @@ private final class QuickToggleModel {
         engines.removeAll()
 
         bindings = importable
+        conflictingBindings.removeAll()
         occupiedHotKeys = payload.occupiedHotKeys
         preferences.saveBindings(bindings)
         preferences.saveOccupiedHotKeys(occupiedHotKeys)
@@ -3740,7 +3826,7 @@ private final class QuickToggleModel {
         var failed = 0
         if case .failure = settingsHotKey.rebind(settingsShortcut) { failed += 1 }
         if isEnabled {
-            failed += rebindAll().failed
+            failed += registerAll(rebinding: true).failed
         }
         if failed > 0 {
             hotKeyRecoveryFailed = true
@@ -3954,27 +4040,29 @@ private final class QuickToggleModel {
         return engine
     }
 
-    private func registerAll() -> (active: Int, failed: Int) {
+    private func registerAll(rebinding: Bool = false) -> (active: Int, failed: Int) {
         var active = 0
         var failed = 0
         for binding in bindings {
             guard let shortcut = binding.shortcut else { continue }
-            switch hotKeyManager(for: binding.id).replace(with: shortcut) {
-            case .success: active += 1
-            case .failure: failed += 1
+            let manager = hotKeyManager(for: binding.id)
+            if !manager.isActive && (settingsShortcut.matchesKey(shortcut) || OccupiedHotKeys.owner(of: shortcut, in: occupiedHotKeys) != nil) {
+                conflictingBindings.insert(binding.id)
+                failed += 1
+                continue
             }
-        }
-        return (active, failed)
-    }
-
-    private func rebindAll() -> (active: Int, failed: Int) {
-        var active = 0
-        var failed = 0
-        for binding in bindings {
-            guard let shortcut = binding.shortcut else { continue }
-            switch hotKeyManager(for: binding.id).rebind(shortcut) {
-            case .success: active += 1
-            case .failure: failed += 1
+            let result = rebinding ? manager.rebind(shortcut) : manager.replace(with: shortcut)
+            switch result {
+            case .success:
+                conflictingBindings.remove(binding.id)
+                active += 1
+            case .failure(let error):
+                if error == .occupied {
+                    conflictingBindings.insert(binding.id)
+                } else {
+                    conflictingBindings.remove(binding.id)
+                }
+                failed += 1
             }
         }
         return (active, failed)
@@ -4001,7 +4089,10 @@ private final class ShortcutRecorderButton: GlassActionButton {
     var onClear: (() -> Bool)?
     var onInvalid: ((String) -> Void)?
 
+    private static weak var activeRecorder: ShortcutRecorderButton?
     private var isRecording = false
+    private var recordingGeneration = 0
+    private var globalCaptureQueued = false
     private var monitor: Any?
     private var resignKeyObserver: NSObjectProtocol?
 
@@ -4027,14 +4118,62 @@ private final class ShortcutRecorderButton: GlassActionButton {
 
     required init?(coder: NSCoder) { nil }
     override var acceptsFirstResponder: Bool { true }
-    deinit { removeMonitor() }
+    deinit {
+        removeMonitor()
+        if isRecording {
+            DispatchQueue.main.async {
+                guard Self.activeRecorder == nil else { return }
+                FunctionHotKeyCenter.shared.endShortcutRecording()
+            }
+        }
+    }
 
     static func shouldCapture(isRecording: Bool, windowIsKey: Bool) -> Bool {
         isRecording && windowIsKey
     }
 
+    private static var focusedRecorder: ShortcutRecorderButton? {
+        guard let recorder = activeRecorder, recorder.isRecording,
+              NSApp.isActive, recorder.window?.isKeyWindow == true,
+              recorder.window?.firstResponder === recorder else { return nil }
+        return recorder
+    }
+
+    static var hasFocusedRecorder: Bool { focusedRecorder != nil }
+
+    static func captureBeforeGlobalDispatch(_ event: CGEvent) -> Bool {
+        guard let recorder = focusedRecorder,
+              let keyEvent = NSEvent(cgEvent: event), !keyEvent.isARepeat,
+              let candidate = Shortcut.from(event: keyEvent),
+              candidate.validationError == nil else { return false }
+        recorder.queueGlobalCapture(candidate)
+        return true
+    }
+
+    static func captureRegisteredShortcut(_ candidate: Shortcut) -> Bool {
+        guard let recorder = focusedRecorder else { return false }
+        recorder.queueGlobalCapture(candidate)
+        return true
+    }
+
+    private func queueGlobalCapture(_ candidate: Shortcut) {
+        guard !globalCaptureQueued else { return }
+        globalCaptureQueued = true
+        let generation = recordingGeneration
+        // Recording can rebuild controls, so wait for the keyboard callback to return.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, Self.focusedRecorder === self,
+                  self.recordingGeneration == generation else { return }
+            self.handle(candidate)
+        }
+    }
+
     @objc private func beginRecording() {
         guard let window, window.makeFirstResponder(self) else { return }
+        Self.activeRecorder?.finish()
+        Self.activeRecorder = self
+        recordingGeneration &+= 1
+        globalCaptureQueued = false
         isRecording = true
         emphasized = true
         title = "请按组合键…"
@@ -4054,6 +4193,7 @@ private final class ShortcutRecorderButton: GlassActionButton {
             self.handle(event)
             return nil
         }
+        FunctionHotKeyCenter.shared.beginShortcutRecording()
         updateAccessibilityState()
     }
 
@@ -4084,6 +4224,10 @@ private final class ShortcutRecorderButton: GlassActionButton {
             NSSound.beep()
             return
         }
+        handle(candidate)
+    }
+
+    private func handle(_ candidate: Shortcut) {
         guard onRecord?(candidate) == true else {
             NSSound.beep()
             finish()
@@ -4097,6 +4241,10 @@ private final class ShortcutRecorderButton: GlassActionButton {
         isRecording = false
         emphasized = false
         removeMonitor()
+        if Self.activeRecorder === self {
+            Self.activeRecorder = nil
+            FunctionHotKeyCenter.shared.endShortcutRecording()
+        }
         updateTitle()
         updateAccessibilityState()
     }
@@ -5703,7 +5851,7 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         let recorder = ShortcutRecorderButton(frame: .zero)
         recorder.shortcut = binding.shortcut
         recorder.onRecord = { [weak self] shortcut in
-            self?.model.applyShortcut(shortcut, for: binding.id) == true
+            self?.model.applyShortcut(shortcut, for: binding.id, saveOnConflict: true) == true
         }
         recorder.onClear = { [weak self] in
             self?.model.clearShortcut(for: binding.id) == true
@@ -5717,11 +5865,11 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         recorder.heightAnchor.constraint(equalToConstant: 26).isActive = true
         recorder.setAccessibilityLabel("\(binding.target.name) 快捷键录制")
         if let native = VerifiedLaunchHotKeys.shortcut(for: binding.target.bundleIdentifier) {
-            recorder.toolTip = "应用自带 \(native.displayName)。点此改成 AiGoodChange 热键，改完立即生效。"
+            recorder.toolTip = "应用自带 \(native.displayName)。点此改成 AiGoodChange 热键；冲突时也可保存。"
         } else if let recommended = SuggestedToggleApps.shortcut(for: binding.target.bundleIdentifier) {
-            recorder.toolTip = "推荐 \(recommended.displayName)。点此录制或改键，改完立即生效。"
+            recorder.toolTip = "推荐 \(recommended.displayName)。点此录制或改键；冲突时也可保存。"
         } else {
-            recorder.toolTip = "优先推荐 ⌘0–9，用尽后推荐 fn/🌐0–9；系统冲突会阻止或警告"
+            recorder.toolTip = "优先推荐 ⌘0–9，用尽后推荐 fn/🌐0–9；冲突组合可保存，解除占用后才会生效"
         }
         if let shortcut = binding.shortcut,
            let warning = model.conflictWarning(for: shortcut) {
@@ -6235,6 +6383,74 @@ private final class SettingsController: NSObject, NSSearchFieldDelegate, NSWindo
         return failures
     }
 }
+// MARK: - First-launch invitation
+
+private final class FirstLaunchRewardController: NSObject, NSWindowDelegate {
+    static let shownKey = "quickToggle.firstLaunchWeComRewardShown.v1"
+    private(set) var window: NSWindow?
+
+    static func bundledImage() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "WeComFirstLaunch", withExtension: "jpg"),
+              let image = NSImage(contentsOf: url),
+              let bitmap = image.representations.compactMap({ $0 as? NSBitmapImageRep }).first,
+              bitmap.pixelsWide == 1080, bitmap.pixelsHigh == 2162 else { return nil }
+        // Use the verified original's pixel coordinates, regardless of JPEG DPI metadata.
+        image.size = NSSize(width: 1080, height: 2162)
+        return image
+    }
+
+    @discardableResult
+    func presentIfNeeded(defaults: UserDefaults?, image: NSImage? = bundledImage()) -> Bool {
+        // Preview and diagnostic callers pass nil; they cannot consume the real first launch.
+        guard let defaults, !defaults.bool(forKey: Self.shownKey), let image else { return false }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 376),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        window.title = "AiGoodChange"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 376))
+        let qr = QRView(frame: NSRect(x: 40, y: 72, width: 280, height: 280), image: image)
+        qr.setAccessibilityLabel("AiGoodBro 企业微信二维码")
+        content.addSubview(qr)
+        let caption = NSTextField(labelWithString: "扫码领现金红包")
+        caption.font = .systemFont(ofSize: 20, weight: .semibold)
+        caption.alignment = .center
+        caption.frame = NSRect(x: 20, y: 28, width: 320, height: 28)
+        content.addSubview(caption)
+        window.contentView = content
+        self.window = window
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        guard window.isVisible else { self.window = nil; return false }
+        defaults.set(true, forKey: Self.shownKey)
+        return true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === window { window = nil }
+    }
+
+    private final class QRView: NSView {
+        let image: NSImage
+        init(frame: NSRect, image: NSImage) {
+            self.image = image
+            super.init(frame: frame)
+        }
+        required init?(coder: NSCoder) { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.white.setFill()
+            bounds.fill()
+            // Original QR plus a 40+ pixel white quiet zone; no QR regeneration or image rewrite.
+            image.draw(in: bounds, from: NSRect(x: 260, y: 685, width: 560, height: 560),
+                       operation: .copy, fraction: 1, respectFlipped: false,
+                       hints: [.interpolation: NSImageInterpolation.none])
+        }
+    }
+}
+
 // MARK: - Menu bar application
 
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -6246,6 +6462,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var lastHotKeyRecovery = Date.distantPast
     private var updateCheckTimer: Timer?
     private var statusMenuGeneration = 0
+    private let firstLaunchReward = FirstLaunchRewardController()
 
     override init() {
         #if QUICKTOGGLE_PREVIEW
@@ -6272,6 +6489,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         updateCheckTimer?.tolerance = 600
         if model.previewMode || model.bindings.isEmpty || model.bindings.allSatisfy({ $0.shortcut == nil }) {
             DispatchQueue.main.async { [weak self] in self?.showSettings() }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.firstLaunchReward.presentIfNeeded(defaults: self.model.previewMode ? nil : .standard)
         }
         DispatchQueue.main.async { [weak self] in self?.model.checkForUpdateIfDue() }
     }
@@ -6603,6 +6824,50 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 // MARK: - Runnable self-test
 
 private enum SelfTest {
+    static func runFirstLaunchRewardSmoke(preview: Bool = false) -> Bool {
+        _ = NSApplication.shared
+        let suite = "com.quicktoggle.test.first-launch-reward.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite),
+              let image = FirstLaunchRewardController.bundledImage() else {
+            print("First-launch reward failed: isolated defaults or bundled QR missing")
+            return false
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("preserve-existing-settings", forKey: "unrelated-setting")
+        let controller = FirstLaunchRewardController()
+        var failures = 0
+        var checks = 0
+        func check(_ condition: Bool, _ description: String) {
+            checks += 1
+            if !condition { failures += 1; print("FAIL reward: \(description)") }
+        }
+        check(!controller.presentIfNeeded(defaults: nil, image: image), "preview skips invitation")
+        check(defaults.object(forKey: FirstLaunchRewardController.shownKey) == nil, "preview does not set marker")
+        check(!controller.presentIfNeeded(defaults: defaults, image: nil), "missing QR does not show")
+        check(defaults.object(forKey: FirstLaunchRewardController.shownKey) == nil, "missing QR does not consume first launch")
+        check(controller.presentIfNeeded(defaults: defaults, image: image), "first launch shows")
+        check(controller.window?.isVisible == true, "native window is visible")
+        check(controller.window?.styleMask.contains(.closable) == true, "window can close")
+        let captions = controller.window?.contentView?.subviews.compactMap { ($0 as? NSTextField)?.stringValue } ?? []
+        check(captions == ["扫码领现金红包"], "exact caption below QR")
+        check(UserDefaults(suiteName: suite)?.bool(forKey: FirstLaunchRewardController.shownKey) == true, "fresh preference reader observes marker")
+        if preview, let number = controller.window?.windowNumber {
+            print("FIRST_LAUNCH_REWARD_WINDOW=\(number)")
+            fflush(stdout)
+            let deadline = Date().addingTimeInterval(45)
+            while controller.window?.isVisible == true, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+        }
+        controller.window?.performClose(nil)
+        check(controller.window == nil, "closing releases invitation")
+        let subsequentLaunch = FirstLaunchRewardController()
+        check(!subsequentLaunch.presentIfNeeded(defaults: UserDefaults(suiteName: suite), image: image), "subsequent launch skips")
+        check(defaults.string(forKey: "unrelated-setting") == "preserve-existing-settings", "existing settings retained")
+        print("First-launch reward: \(checks - failures)/\(checks) checks passed")
+        return failures == 0
+    }
+
     static func runComponentSmoke() -> Bool {
         let model = QuickToggleModel(diagnosticMode: true)
         defer { model.close() }
@@ -7440,14 +7705,16 @@ private enum SelfTest {
         require(model.bindings.first { $0.id == bindings[0].id }?.shortcut == nil, "clear did not unset the shortcut")
         require(controller.window.firstResponder === recorder(in: row(for: bindings[0].id)), "focus lost after clear")
 
-        // Conflict: no rebuild happens, so the same control keeps focus and
-        // the shortcut stays unset.
+        // A conflict is saved after the incumbent in the persisted order.
         let conflictRecorder = recorder(in: row(for: bindings[0].id))
         controller.window.makeFirstResponder(conflictRecorder)
         let conflictCombo = Shortcut(keyCode: UInt32(kVK_ANSI_2), modifiers: UInt32(cmdKey), label: "2")
-        require(conflictRecorder?.onRecord?(conflictCombo) == false, "conflicting combo was accepted")
-        require(controller.window.firstResponder === conflictRecorder, "focus lost on conflict")
-        require(model.bindings.first { $0.id == bindings[0].id }?.shortcut == nil, "conflict changed the shortcut")
+        require(conflictRecorder?.onRecord?(conflictCombo) == true, "conflicting combo was rejected")
+        require(controller.window.firstResponder === recorder(in: row(for: bindings[0].id)), "focus lost on conflict")
+        require(model.bindings.first { $0.id == bindings[0].id }?.shortcut == conflictCombo, "conflict was not saved")
+        require(model.bindings.first { $0.id == bindings[1].id }?.shortcut == conflictCombo, "conflict replaced incumbent")
+        require(model.exportConfiguration().bindings.last?.id == bindings[0].id, "incumbent lost registration priority")
+        require(model.statusTone == .warning && model.statusMessage.contains("暂未生效"), "conflict warning missing")
 
         // Confirmed delete: focus moves to the row that took the deleted
         // slot in display order (the order the user sees). The modal alert
@@ -7914,7 +8181,8 @@ private enum SelfTest {
         let fixtureApp = makeFixtureApp(named: "StatesFixture", bundleID: "test.states.fixture", in: fixtureRoot)
         // Carbon digit key codes are not contiguous; use explicit constants so
         // the conflict probe below really matches binding 2's shortcut.
-        let digitKeyCodes = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3]
+        let digitKeyCodes = [kVK_ANSI_2, kVK_ANSI_1, kVK_ANSI_3]
+        let digitLabels = ["2", "1", "3"]
         let bindings = (1...3).map { index in
             AppBinding(
                 id: UUID(),
@@ -7926,7 +8194,7 @@ private enum SelfTest {
                 shortcut: Shortcut(
                     keyCode: UInt32(digitKeyCodes[index - 1]),
                     modifiers: UInt32(cmdKey),
-                    label: "\(index)"
+                    label: digitLabels[index - 1]
                 ),
                 launchIfNeeded: true
             )
@@ -7989,20 +8257,22 @@ private enum SelfTest {
         require(row(for: bindings[0].id)?.recorderButton === rebuilt0, "invalid key triggered a rebuild")
         rebuilt0?.keyDown(with: keyEvent(UInt16(kVK_Escape), [], "\u{1B}"))
 
-        // 5. Conflict: exits recording, keeps the original key, keeps focus.
+        // 5. Conflict: store the recorded key and show that it is not registered.
         beginRecording(rebuilt0)
-        rebuilt0?.keyDown(with: keyEvent(UInt16(kVK_ANSI_2), [.command], "2"))
-        require(rebuilt0?.title == "⌘9", "conflict did not restore the title")
-        require(shortcut(of: bindings[0]) == "⌘9", "conflict changed the shortcut")
-        require(controller.window.firstResponder === rebuilt0, "conflict lost focus")
-        require(row(for: bindings[0].id)?.recorderButton === rebuilt0, "conflict triggered a rebuild")
+        rebuilt0?.keyDown(with: keyEvent(UInt16(kVK_ANSI_1), [.command], "1"))
+        let afterConflict = row(for: bindings[0].id)?.recorderButton
+        require(afterConflict?.title == "⌘1", "conflict key did not display")
+        require(shortcut(of: bindings[0]) == "⌘1", "conflict key was not saved")
+        require(shortcut(of: bindings[1]) == "⌘1", "incumbent changed")
+        require(controller.window.firstResponder === afterConflict, "conflict lost focus")
+        require(row(for: bindings[0].id)?.statusLine?.stringValue.contains("未生效") == true, "conflict row warning missing")
 
         // 6. Delete during recording clears through the real path and returns
         // focus to the rebuilt recorder.
-        beginRecording(rebuilt0)
-        rebuilt0?.keyDown(with: keyEvent(UInt16(kVK_Delete), [], "\u{7F}"))
+        beginRecording(afterConflict)
+        afterConflict?.keyDown(with: keyEvent(UInt16(kVK_Delete), [], "\u{7F}"))
         let afterClear = row(for: bindings[0].id)?.recorderButton
-        require(afterClear != nil && afterClear !== rebuilt0, "clear did not rebuild")
+        require(afterClear != nil && afterClear !== afterConflict, "clear did not rebuild")
         require(shortcut(of: bindings[0]) == nil, "clear did not unset the shortcut")
         require(afterClear?.title == "未设置", "cleared title wrong: \(afterClear?.title ?? "?")")
         require(controller.window.firstResponder === afterClear, "focus lost after clear")
@@ -9568,7 +9838,8 @@ private enum SelfTest {
         failures.forEach { print("FAIL: \($0)") }
         print(failures.isEmpty ? "Interface layout smoke passed (560/640/1080 widths)" : "Interface layout smoke failed")
         let welcomePassed = checkFirstUseWelcomeCard()
-        return failures.isEmpty && welcomePassed
+        let rewardPassed = runFirstLaunchRewardSmoke()
+        return failures.isEmpty && welcomePassed && rewardPassed
     }
 
     private static func checkFirstUseWelcomeCard() -> Bool {
@@ -9620,6 +9891,12 @@ private enum SelfTest {
 }
 
 private let arguments = Set(CommandLine.arguments.dropFirst())
+if arguments.contains("--first-launch-reward-preview") {
+    exit(SelfTest.runFirstLaunchRewardSmoke(preview: true) ? 0 : 1)
+}
+if arguments.contains("--first-launch-reward-test") {
+    exit(SelfTest.runFirstLaunchRewardSmoke() ? 0 : 1)
+}
 if arguments.contains("--theme-gallery") {
     _ = NSApplication.shared
     exit(SelfTest.renderThemeGallery() ? 0 : 1)

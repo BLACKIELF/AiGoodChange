@@ -16,7 +16,7 @@ AiGoodChange 让常用应用各有一组固定快捷键。需要哪个，按下�
 
 F3 适合总览桌面，⌘Tab 适合在应用间切换。经常来回使用的几个应用，可以交给 AiGoodChange。先把最常用的两三个设好，从下一次打开它们开始用。
 
-原名 QuickToggle（轻唤）。当前源码基于 `1.0.0`，已加入下列未发布更新；GitHub 历史安装包仍为旧名称与旧功能。
+原名 QuickToggle（轻唤）。当前 macOS 正式版为 **AiGoodChange 1.0.1**。
 
 Windows 用户可使用 [Windows 1.0 预览版](https://github.com/BLACKIELF/AiGoodChange/releases/tag/v1.0.0-windows-preview.1)，提供 x64 与 ARM64 原生托盘程序，详见 [Windows 使用说明](windows/README.md)。下文为 macOS 版说明。
 
@@ -40,7 +40,7 @@ open "build/preview/AiGoodChange.app"
 ## 下载与运行
 
 - Apple Silicon Mac，macOS 13 或更高版本。
-- 历史安装包：[轻唤 1.0.0](https://github.com/BLACKIELF/AiGoodChange/releases/tag/v1.0.0) 中的 `QuickToggle-1.0.0-macOS-arm64.zip`。
+- 下载安装包：[AiGoodChange 1.0.1 macOS](https://github.com/BLACKIELF/AiGoodChange/releases/tag/v1.0.1)，选择 `AiGoodChange-1.0.1-macOS-arm64.zip`，核对同页的 `SHA256SUMS.txt` 后解压。
 - 默认构建使用 ad-hoc 签名；若本机已有开发证书则复用该证书。构建产物未经 Apple 公证，不会自动安装到 `/Applications`。首次运行若被 Gatekeeper 拦截，请在“系统设置 > 隐私与安全性”中确认打开；不放心时请直接从源码构建。
 
 从源码构建需要 Xcode Command Line Tools：
@@ -62,7 +62,7 @@ open "build/AiGoodChange.app"
 - 一次物理按压只触发一次：长按自动重复或按键抖动不会误走第二次恢复；松开后可立即再次按下。
 - 休眠、解锁或点开菜单栏后会自动重新注册快捷键；磁盘上的应用比正在运行的进程更新时会自动重启，不必再手动退出再进。
 - 可选“登录时启动”，默认关闭，只用系统登录项，不新增后台进程。开机后要快捷键继续可用，打开这个开关即可。
-- 新快捷键先注册再替换；发生冲突时旧快捷键继续有效。
+- 手动录制应用快捷键时，冲突组合可以保存。已有注册者继续使用该键。
 - 设置窗口默认使用 `⌘3` 显示或隐藏，也可以直接重新录制。
 - 无辅助功能权限时，Carbon 快捷键仍可激活、隐藏和重新打开窗口；精确恢复最小化窗口和主动拦截 `fn/🌐` 热键需要用户授权。
 - 只使用 Swift、AppKit、Carbon、ApplicationServices 与 ServiceManagement，无第三方运行依赖、遥测或账号系统。更新检查仅访问 GitHub 发行版接口。
@@ -72,10 +72,10 @@ open "build/AiGoodChange.app"
 首次启动会打开单页设置，之后默认按 `⌘3` 显示或隐藏：
 
 1. 点击“添加应用…”从已安装可视应用中选择，或改从磁盘挑选 `.app`；可重复添加多个应用。
-2. 在每个应用右侧分别录制快捷键。录制时会先确认应用还在，再探测该组合是否空闲（含「本机已占用」列表，该列表可在设置中自行增删）；占用则不改原键。
+2. 在每个应用右侧分别录制快捷键。录制时会先确认应用还在，再探测该组合是否空闲（含「本机已占用」列表，该列表可在设置中自行增删）；冲突时仍可保存组合，界面会提示暂未生效。
 3. Esc 取消；Delete 或 Backspace 清除。
 4. 每个应用可独立设置“未运行时自动打开”，也可单独移除。
-5. 设置保存后立即生效，并通过 UserDefaults 保存在本机。
+5. 快捷键通过 UserDefaults 保存在本机，组合空闲时立即生效。
 
 点击应用图标或名称可更换 App，保留该行原快捷键；呼出／恢复可使用快捷键、行尾“更多”菜单或菜单栏。聚焦应用行后可按空格或回车呼出／恢复。
 
@@ -104,8 +104,8 @@ open "build/AiGoodChange.app"
 - 使用字母、方向键或 F1–F12 时，至少两个修饰键，且必须包含 Command 或 Control。
 - `fn/🌐 + Q`、`fn/🌐 + 方向键` 等已知 macOS 组合不会注册。`fn/🌐 + F1–F12` 的事件会受“将 F1、F2 等键用作标准功能键”影响，本版明确不注册；该设置开启时顶部键默认发 F1–F12，关闭时通常要按 Fn 才发 F1–F12，外接键盘固件还可能改写行为。
 - 若系统把单按 Globe 配置为切换输入法、显示表情与符号或开始听写，录制 `fn/🌐 + 数字` 时会警告可能不可达或同时触发系统行为。
-- Carbon 独占注册负责普通组合；`fn/🌐 + 数字` 由事件 tap 监听。候选键先注册，失败时旧键保持有效。
-- 每个应用必须使用不同组合；冲突项不会影响其他已注册快捷键。
+- Carbon 独占注册负责普通组合；`fn/🌐 + 数字` 由事件 tap 监听。候选键会先尝试注册，冲突时保存但暂不启用。
+- 同一组合只能有一个实际注册者。手动录制允许保存冲突，已有注册者继续使用。
 - 「本机已占用」列表同样检测 Fn 组合。macOS 无法暴露所有系统动作、应用非独占快捷键或第三方键盘固件映射，因此不能检测全部冲突，Fn 组合保存时会保留风险提示。
 
 “设置与帮助”中的 macOS 和应用快捷键内容用于参考；用户手动添加的占用记录会参与冲突检查。
@@ -145,7 +145,7 @@ AiGoodChange 不上传应用列表或快捷键，不包含遥测或账号。更�
 
 AiGoodChange (formerly QuickToggle / 轻唤) is a lightweight, native macOS menu-bar utility for assigning global shortcuts to apps. Press once to reveal an app; press again to safely restore the previous state.
 
-The source is based on `1.0.0` with unreleased updates. Existing release downloads retain the old name and do not include these changes.
+The current stable macOS release is **AiGoodChange 1.0.1**.
 
 ### Why AiGoodChange
 
@@ -156,7 +156,7 @@ AiGoodChange gives your frequent apps fixed shortcuts. Press an app’s shortcut
 ### Download and run
 
 - Apple Silicon Mac with macOS 13 or later.
-- The historical download is `QuickToggle-1.0.0-macOS-arm64.zip` from [QuickToggle 1.0.0](https://github.com/BLACKIELF/AiGoodChange/releases/tag/v1.0.0).
+- Download `AiGoodChange-1.0.1-macOS-arm64.zip` from [AiGoodChange 1.0.1](https://github.com/BLACKIELF/AiGoodChange/releases/tag/v1.0.1) and verify it against `SHA256SUMS.txt` before extracting.
 - Builds use ad-hoc signing unless a local development certificate is available. They are not Apple-notarized. It is not installed into `/Applications` automatically. If Gatekeeper blocks the first launch, explicitly allow it in System Settings > Privacy & Security, or build from source.
 
 Building from source requires Xcode Command Line Tools:
@@ -171,7 +171,7 @@ open "build/AiGoodChange.app"
 - Search apps or shortcuts, filter pending setup and occupied combinations, and inspect each shortcut’s registration state. Preferences and guides have a separate scrolling panel; feedback remains visible.
 - Multiple app bindings with one independently recorded shortcut per app. Unused `⌘0–9` combinations remain the first choice; after the Command digits are exhausted, AiGoodChange recommends `fn/🌐0–9`. `⌘⌥K`, `⌘⇧K`, `⌃⇧K`, `⌘⌥←/→`, and `⌃⇧F1–F12` remain available.
 - Scans installed visible apps into an “add app” picker. Helpers and background-only components stay out of the main list, and nothing is registered automatically.
-- The local occupied-hotkey list is user-editable in Settings; the recorder keeps avoiding whatever it contains.
+- The local occupied-hotkey list is user-editable in Settings; automatic suggestions skip occupied combinations, and manual recording can save them with a warning.
 - Configuration export/import from the menu bar: a JSON backup carries every binding, the settings shortcut, the enabled state, and the occupied list. Import skips apps that are not installed and names them.
 - The row’s More menu contains reveal/restore, app replacement, launch-if-needed, shortcut help, and removal.
 - Click the app icon or name to replace its target while retaining the shortcut. Reveal/restore remains available through the shortcut, More menu, menu bar, or Space/Return on the focused row.
@@ -181,7 +181,7 @@ open "build/AiGoodChange.app"
 - Remembers whether the app was hidden, minimized, or visible and restores conservatively on the second press.
 - One physical press triggers once: key repeat and switch bounce cannot accidentally perform the second action; releasing the keys immediately rearms the shortcut.
 - Optional “Open at Login”, off by default, using the system login item only.
-- Transactional hot-key replacement: a conflicting candidate never removes the working shortcut.
+- A manually recorded app shortcut can be saved while occupied. It remains inactive while its current owner keeps it.
 - The settings window defaults to `⌘3` and can be changed in place.
 - Carbon shortcuts, activation, hiding, and window reopening work without Accessibility access; exact minimized-window restoration and active interception of `fn/🌐` shortcuts are opt-in.
 - Native Swift, AppKit, Carbon, ApplicationServices, and ServiceManagement only—no third-party runtime dependencies, telemetry, accounts, or sync. The update checker requests public release metadata from GitHub.
